@@ -58,12 +58,42 @@ fn dsym_path_for_binary(path: &Path) -> Option<PathBuf> {
 
 fn unpacked_id0_path(path: &Path) -> Option<PathBuf> {
     let ext = path.extension().and_then(|e| e.to_str())?;
-    if ext == "i64" || ext == "idb" {
+    if ext.eq_ignore_ascii_case("i64") || ext.eq_ignore_ascii_case("idb") {
         let mut id0 = path.to_path_buf();
         id0.set_extension("id0");
         return Some(id0);
     }
     None
+}
+
+fn base_input_path_for_database(path: &Path) -> PathBuf {
+    let mut base = path.to_path_buf();
+    if let Some(ext) = base.extension().and_then(|e| e.to_str()) {
+        if ext.eq_ignore_ascii_case("i64")
+            || ext.eq_ignore_ascii_case("idb")
+            || ext.eq_ignore_ascii_case("id0")
+        {
+            base.set_extension("");
+        }
+    }
+    base
+}
+
+fn database_paths_match(current: &Path, requested: &Path) -> bool {
+    current == requested
+        || unpacked_id0_path(current).as_deref() == Some(requested)
+        || unpacked_id0_path(requested).as_deref() == Some(current)
+}
+
+fn init_database_args(extra_args: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+
+    if !extra_args.iter().any(|arg| arg == "-A") {
+        args.push("-A".to_string());
+    }
+
+    args.extend(extra_args.iter().cloned());
+    args
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -85,7 +115,7 @@ pub fn handle_open(
     // Check if a database is already open
     if let Some(db) = idb.as_ref() {
         let current_path = db.path();
-        if current_path == expanded {
+        if database_paths_match(current_path, &expanded) {
             // Same database - return its info instead of reopening
             info!(path = %expanded.display(), "Database already open, returning existing info");
             return Ok(build_db_info(db, &current_path.display().to_string(), None));
@@ -161,15 +191,26 @@ pub fn handle_open(
 
     let open_start = Instant::now();
     let mut opened_path = expanded.clone();
+    let init_args = init_database_args(extra_args);
     let db = if is_idb {
         // Open existing IDA database (no auto-analysis needed, but save=true to pack on close)
-        let mut db = IDB::open_with(&expanded, false, true);
+        let mut opts = IDBOpenOptions::new();
+        opts.auto_analyse(false).save(true);
+        for arg in &init_args {
+            opts.arg(arg);
+        }
+        let mut db = opts.open(&expanded);
         if db.is_err() {
             if let Some(id0_path) = unpacked_id0_path(&expanded) {
                 if id0_path.exists() {
                     info!(path = %id0_path.display(), "Falling back to unpacked ID0 database");
                     opened_path = id0_path.clone();
-                    db = IDB::open_with(&id0_path, false, true);
+                    let mut opts = IDBOpenOptions::new();
+                    opts.auto_analyse(false).save(true);
+                    for arg in &init_args {
+                        opts.arg(arg);
+                    }
+                    db = opts.open(&id0_path);
                 }
             }
         }
@@ -190,7 +231,7 @@ pub fn handle_open(
             info!(file_type = ft, "Using file type selector (-T flag)");
             opts.file_type(ft);
         }
-        for arg in extra_args {
+        for arg in &init_args {
             opts.arg(arg);
         }
         opts.idb(out_path).save(true).open(&expanded)
@@ -218,14 +259,11 @@ pub fn handle_open(
         if let Some(path) = debug_info_path {
             resolved = Some(PathBuf::from(path));
         } else {
-            let mut base = expanded.clone();
-            if is_idb {
-                if let Some(ext) = base.extension().and_then(|e| e.to_str()) {
-                    if ext.eq_ignore_ascii_case("i64") || ext.eq_ignore_ascii_case("idb") {
-                        base.set_extension("");
-                    }
-                }
-            }
+            let base = if is_idb {
+                base_input_path_for_database(&expanded)
+            } else {
+                expanded.clone()
+            };
             if let Some(candidate) = dsym_expected_path_for_binary(&base) {
                 resolved = Some(candidate);
             }
@@ -306,12 +344,7 @@ pub fn handle_load_debug_info(
     let resolved = if let Some(path) = path {
         PathBuf::from(path)
     } else {
-        let mut base = db.path().to_path_buf();
-        if let Some(ext) = base.extension().and_then(|e| e.to_str()) {
-            if ext.eq_ignore_ascii_case("i64") || ext.eq_ignore_ascii_case("idb") {
-                base.set_extension("");
-            }
-        }
+        let base = base_input_path_for_database(db.path());
         dsym_path_for_binary(&base)
             .ok_or_else(|| ToolError::InvalidPath("No sibling .dSYM found".to_string()))?
     };
@@ -328,4 +361,64 @@ pub fn handle_load_debug_info(
         "path": resolved.display().to_string(),
         "loaded": loaded,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::ida::handlers::database::{
+        base_input_path_for_database, database_paths_match, init_database_args,
+    };
+
+    #[test]
+    fn init_database_args_preserves_user_args() {
+        let args = init_database_args(&["-Sscript.py".to_string(), "-Tpe".to_string()]);
+        assert!(args.iter().any(|arg| arg == "-Sscript.py"));
+        assert!(args.iter().any(|arg| arg == "-Tpe"));
+    }
+
+    #[test]
+    fn database_paths_match_treats_packed_and_unpacked_as_same_database() {
+        let packed = Path::new("/tmp/sample.i64");
+        let unpacked = Path::new("/tmp/sample.id0");
+        let legacy = Path::new("/tmp/sample.idb");
+        let packed_upper = Path::new("/tmp/sample.I64");
+
+        assert!(database_paths_match(packed, unpacked));
+        assert!(database_paths_match(unpacked, packed));
+        assert!(database_paths_match(legacy, unpacked));
+        assert!(database_paths_match(unpacked, legacy));
+        assert!(database_paths_match(packed_upper, unpacked));
+        assert!(!database_paths_match(packed, legacy));
+    }
+
+    #[test]
+    fn base_input_path_for_database_strips_supported_database_extensions() {
+        assert_eq!(
+            base_input_path_for_database(Path::new("/tmp/sample.i64")),
+            Path::new("/tmp/sample")
+        );
+        assert_eq!(
+            base_input_path_for_database(Path::new("/tmp/sample.idb")),
+            Path::new("/tmp/sample")
+        );
+        assert_eq!(
+            base_input_path_for_database(Path::new("/tmp/sample.id0")),
+            Path::new("/tmp/sample")
+        );
+        assert_eq!(
+            base_input_path_for_database(Path::new("/tmp/sample.bin")),
+            Path::new("/tmp/sample.bin")
+        );
+    }
+
+    #[test]
+    fn init_database_args_injects_non_interactive_flag_once() {
+        let args = init_database_args(&[]);
+        assert_eq!(args, vec!["-A".to_string()]);
+
+        let args = init_database_args(&["-A".to_string(), "-Tpe".to_string()]);
+        assert_eq!(args.iter().filter(|arg| arg.as_str() == "-A").count(), 1);
+    }
 }

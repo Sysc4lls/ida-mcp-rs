@@ -422,7 +422,7 @@ mod tests {
         assert!(script.contains("node.altset(3, ea)"));
         assert!(script.contains("run_plugin_checked(\"dscu\", 2"));
         assert!(script.contains("loading region 0x180116000"));
-        assert!(script.contains("dscu_load_region(6443599872)"));
+        assert!(script.contains(&format!("dscu_load_region({})", 0x180116000u64)));
         assert!(script.contains("dsc_add_region complete for: 0x180116000"));
     }
 }

@@ -186,7 +186,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-// IDA library initialization is now deferred to the worker loop's first request.
+// IDA library initialization is deferred to the worker loop's first request.
 // This avoids license contention when open_dsc needs to run idat first.
 
 async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
@@ -317,17 +317,16 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
             let session_manager = Arc::new(LocalSessionManager::default());
             let cancel = tokio_util::sync::CancellationToken::new();
             let cancel_for_config = cancel.clone();
-            let config = StreamableHttpServerConfig {
-                sse_keep_alive: if args.sse_keep_alive_secs == 0 {
+            let config = StreamableHttpServerConfig::default()
+                .with_sse_keep_alive(if args.sse_keep_alive_secs == 0 {
                     None
                 } else {
                     Some(Duration::from_secs(args.sse_keep_alive_secs))
-                },
-                sse_retry: None,
-                stateful_mode: !args.stateless,
-                json_response: args.json_response && args.stateless,
-                cancellation_token: cancel_for_config,
-            };
+                })
+                .with_sse_retry(None)
+                .with_stateful_mode(!args.stateless)
+                .with_json_response(args.json_response && args.stateless)
+                .with_cancellation_token(cancel_for_config);
 
             let service = StreamableHttpService::new(
                 move || {
@@ -519,15 +518,19 @@ fn open_db_for_probe(path: &PathBuf, args: &ProbeArgs) -> Result<IDB, idalib::ID
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let is_idb = ext == "i64" || ext == "idb";
+    let is_idb = ext == "i64" || ext == "idb" || ext == "id0";
+    let init_args = probe_init_database_args();
 
     if is_idb {
+        let mut opts = IDBOpenOptions::new();
+        opts.auto_analyse(args.auto_analyse).save(true);
+        for arg in &init_args {
+            opts.arg(arg);
+        }
         if args.auto_analyse {
             info!("Opening existing IDB with auto-analysis enabled");
-            IDB::open_with(path, true, true) // auto_analyse=true, save=true to pack on close
-        } else {
-            IDB::open_with(path, false, true) // save=true to pack on close
         }
+        opts.open(path)
     } else {
         let mut opts = IDBOpenOptions::new();
         opts.auto_analyse(true);
@@ -540,8 +543,15 @@ fn open_db_for_probe(path: &PathBuf, args: &ProbeArgs) -> Result<IDB, idalib::ID
             "Opening raw binary with auto-analysis (idb_out={})",
             out_path.display()
         );
+        for arg in &init_args {
+            opts.arg(arg);
+        }
         opts.idb(&out_path).save(true).open(path)
     }
+}
+
+fn probe_init_database_args() -> Vec<String> {
+    vec!["-A".to_string()]
 }
 
 fn parse_address(s: &str) -> anyhow::Result<u64> {

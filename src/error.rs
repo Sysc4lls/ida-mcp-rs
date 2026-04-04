@@ -70,12 +70,7 @@ pub enum ToolError {
 impl ToolError {
     /// Convert to MCP CallToolResult with is_error: true
     pub fn to_tool_result(&self) -> CallToolResult {
-        CallToolResult {
-            content: vec![Content::text(self.to_string())],
-            is_error: Some(true),
-            meta: None,
-            structured_content: None,
-        }
+        CallToolResult::error(vec![Content::text(self.to_string())])
     }
 }
 

@@ -3207,17 +3207,17 @@ fn task_state_to_mcp(state: &task::TaskState) -> rmcp::model::Task {
         task::TaskStatus::Failed => rmcp::model::TaskStatus::Failed,
         task::TaskStatus::Cancelled => rmcp::model::TaskStatus::Cancelled,
     };
-    rmcp::model::Task {
-        task_id: state.id.clone(),
+    rmcp::model::Task::new(
+        state.id.clone(),
         status,
-        status_message: Some(state.message.clone()),
-        created_at: state.created_at_iso.clone(),
-        last_updated_at: state.updated_at_iso.clone(),
-        // Terminal tasks are retained on a best-effort basis and can be
-        // evicted once the in-memory cap is exceeded.
-        ttl: Some(task::TASK_RETENTION_TTL_MS),
-        poll_interval: Some(5000),
-    }
+        state.created_at_iso.clone(),
+        state.updated_at_iso.clone(),
+    )
+    .with_status_message(state.message.clone())
+    // Terminal tasks are retained on a best-effort basis and can be
+    // evicted once the in-memory cap is exceeded.
+    .with_ttl(task::TASK_RETENTION_TTL_MS)
+    .with_poll_interval(5000)
 }
 
 fn call_tool_result_to_value(result: &CallToolResult) -> Value {
@@ -3252,14 +3252,13 @@ fn task_payload_result_value(result: Option<Value>) -> Value {
 #[tool_handler(router = self.tool_mux)]
 impl ServerHandler for IdaMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            capabilities: ServerCapabilities::builder()
+        ServerInfo::new(
+            ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tasks_with(rmcp::model::TasksCapability::server_default())
                 .build(),
-            instructions: Some(self.instructions()),
-            ..Default::default()
-        }
+        )
+        .with_instructions(self.instructions())
     }
 
     async fn enqueue_task(
@@ -3286,9 +3285,7 @@ impl ServerHandler for IdaMcpServer {
                 .task_registry
                 .get(&tid)
                 .ok_or_else(|| McpError::internal_error(format!("Task {tid} disappeared"), None))?;
-            Ok(CreateTaskResult {
-                task: task_state_to_mcp(&state),
-            })
+            Ok(CreateTaskResult::new(task_state_to_mcp(&state)))
         } else {
             // Inline completion — no background work, but still register a completed
             // task so tasks/get and tasks/result remain resolvable for this task_id.
@@ -3298,9 +3295,7 @@ impl ServerHandler for IdaMcpServer {
                 .task_registry
                 .get(&id)
                 .ok_or_else(|| McpError::internal_error(format!("Task {id} disappeared"), None))?;
-            Ok(CreateTaskResult {
-                task: task_state_to_mcp(&state),
-            })
+            Ok(CreateTaskResult::new(task_state_to_mcp(&state)))
         }
     }
 
@@ -3315,11 +3310,7 @@ impl ServerHandler for IdaMcpServer {
             .iter()
             .map(task_state_to_mcp)
             .collect();
-        Ok(ListTasksResult {
-            tasks,
-            next_cursor: None,
-            total: None,
-        })
+        Ok(ListTasksResult::new(tasks))
     }
 
     async fn get_task_info(
@@ -3346,9 +3337,9 @@ impl ServerHandler for IdaMcpServer {
     ) -> Result<GetTaskPayloadResult, McpError> {
         let state = self.task_registry.get(&request.task_id);
         match state {
-            Some(s) if s.status == task::TaskStatus::Completed => {
-                Ok(GetTaskPayloadResult(task_payload_result_value(s.result)))
-            }
+            Some(s) if s.status == task::TaskStatus::Completed => Ok(GetTaskPayloadResult::new(
+                task_payload_result_value(s.result),
+            )),
             Some(s) if s.status == task::TaskStatus::Failed => {
                 Err(McpError::internal_error(s.message, None))
             }
