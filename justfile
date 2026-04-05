@@ -160,5 +160,8 @@ clean:
 
 # Bump version and push tag
 bump:
-    git tag $(svu patch)
-    git push --tags
+    #!/usr/bin/env bash
+    set -euo pipefail
+    VERSION="$(svu patch)"
+    git tag -a "$VERSION" -m "$VERSION"
+    git push origin "$VERSION"
