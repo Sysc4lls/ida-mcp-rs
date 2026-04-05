@@ -71,6 +71,11 @@ ci-package-artifacts:
 ci-generate-checksums:
     just --justfile "{{ justfile_directory() }}/ci.just" generate-checksums
 
+_release-banner message:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf '\n==> %s\n' '{{ message }}'
+
 # Local post-release publishing. These use your local `gh` auth and the live
 
 # GitHub release assets/checksums rather than CI secrets or ephemeral artifacts.
@@ -81,6 +86,7 @@ release-fetch-checksums version="":
     if [[ -z "$VERSION" ]]; then
         VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     fi
+    just _release-banner "Fetching release checksums for ${VERSION}"
     just --justfile "{{ justfile_directory() }}/ci.just" download-checksums "$VERSION"
 
 release-sync-scoop version="":
@@ -91,6 +97,7 @@ release-sync-scoop version="":
         VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     fi
     just release-fetch-checksums "$VERSION"
+    just _release-banner "Publishing Scoop manifest for ${VERSION}"
     just --justfile "{{ justfile_directory() }}/ci.just" publish-scoop "$VERSION"
 
 release-sync-nur version="":
@@ -101,6 +108,7 @@ release-sync-nur version="":
         VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     fi
     just release-fetch-checksums "$VERSION"
+    just _release-banner "Publishing NUR package for ${VERSION}"
     just --justfile "{{ justfile_directory() }}/ci.just" publish-nur "$VERSION"
 
 release-sync-winget version="":
@@ -111,6 +119,7 @@ release-sync-winget version="":
         VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     fi
     just release-fetch-checksums "$VERSION"
+    just _release-banner "Publishing winget manifests for ${VERSION}"
     just --justfile "{{ justfile_directory() }}/ci.just" publish-winget "$VERSION"
 
 release-sync version="":
@@ -120,11 +129,17 @@ release-sync version="":
     if [[ -z "$VERSION" ]]; then
         VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
     fi
+    just _release-banner "Starting post-release sync for ${VERSION}"
     just release-fetch-checksums "$VERSION"
+    just _release-banner "Updating Homebrew cask for ${VERSION}"
     just --justfile "{{ justfile_directory() }}/ci.just" publish-cask "$VERSION"
+    just _release-banner "Publishing Scoop manifest for ${VERSION}"
     just --justfile "{{ justfile_directory() }}/ci.just" publish-scoop "$VERSION"
+    just _release-banner "Publishing NUR package for ${VERSION}"
     just --justfile "{{ justfile_directory() }}/ci.just" publish-nur "$VERSION"
+    just _release-banner "Publishing winget manifests for ${VERSION}"
     just --justfile "{{ justfile_directory() }}/ci.just" publish-winget "$VERSION"
+    just _release-banner "Release sync complete for ${VERSION}"
 
 # Run integration test (debug)
 test: build

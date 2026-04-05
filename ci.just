@@ -152,12 +152,13 @@ publish-nur version:
     }
     NIXEOF
 
-    sed -i \
+    sed -i.bak \
         -e "s|VERSION_PLACEHOLDER|${VERSION}|g" \
         -e "s|LINUX_X86_64_HASH_PLACEHOLDER|${LINUX_X86_64_SRI}|g" \
         -e "s|DARWIN_X86_64_HASH_PLACEHOLDER|${DARWIN_X86_64_SRI}|g" \
         -e "s|DARWIN_ARM64_HASH_PLACEHOLDER|${DARWIN_ARM64_SRI}|g" \
         "${WORKDIR}/ida-mcp-default.nix"
+    rm -f "${WORKDIR}/ida-mcp-default.nix.bak"
 
     TMPDIR="$(mktemp -d)"
     git clone "https://x-access-token:${GH_AUTH_TOKEN}@github.com/blacktop/nur.git" "${TMPDIR}"
@@ -166,7 +167,16 @@ publish-nur version:
     mkdir -p pkgs/ida-mcp
     cp "${OLDPWD}/${WORKDIR}/ida-mcp-default.nix" pkgs/ida-mcp/default.nix
     if ! grep -q 'ida-mcp' default.nix; then
-        sed -i '/ipsw = /a\  ida-mcp = pkgs.callPackage ./pkgs/ida-mcp { };' default.nix
+        awk '
+            /ipsw = / && !done {
+                print
+                print "  ida-mcp = pkgs.callPackage ./pkgs/ida-mcp { };"
+                done = 1
+                next
+            }
+            { print }
+        ' default.nix > default.nix.tmp
+        mv default.nix.tmp default.nix
     fi
 
     git config user.name "github-actions[bot]"
@@ -188,12 +198,13 @@ publish-winget version:
 
     hash_for() { grep "$1" "${CHECKSUMS_FILE}" | awk '{print $1}'; }
     WIN_X86_64_HASH_UPPER=$(hash_for "Windows_x86_64.zip" | tr '[:lower:]' '[:upper:]')
-    MANIFEST_DIR="${WORKDIR}/manifests/b/blacktop/ida-mcp/${VERSION}"
+    LOCAL_MANIFEST_DIR="${WORKDIR}/manifests/b/blacktop/ida-mcp/${VERSION}"
+    REMOTE_MANIFEST_DIR="manifests/b/blacktop/ida-mcp/${VERSION}"
     BRANCH="ida-mcp-${VERSION}"
 
-    mkdir -p "${MANIFEST_DIR}"
+    mkdir -p "${LOCAL_MANIFEST_DIR}"
 
-    cat > "${MANIFEST_DIR}/blacktop.ida-mcp.yaml" <<EOF
+    cat > "${LOCAL_MANIFEST_DIR}/blacktop.ida-mcp.yaml" <<EOF
     # yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
     PackageIdentifier: blacktop.ida-mcp
     PackageVersion: ${VERSION}
@@ -202,7 +213,7 @@ publish-winget version:
     ManifestVersion: 1.6.0
     EOF
 
-    cat > "${MANIFEST_DIR}/blacktop.ida-mcp.installer.yaml" <<EOF
+    cat > "${LOCAL_MANIFEST_DIR}/blacktop.ida-mcp.installer.yaml" <<EOF
     # yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
     PackageIdentifier: blacktop.ida-mcp
     PackageVersion: ${VERSION}
@@ -220,7 +231,7 @@ publish-winget version:
     ManifestVersion: 1.6.0
     EOF
 
-    cat > "${MANIFEST_DIR}/blacktop.ida-mcp.locale.en-US.yaml" <<EOF
+    cat > "${LOCAL_MANIFEST_DIR}/blacktop.ida-mcp.locale.en-US.yaml" <<EOF
     # yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
     PackageIdentifier: blacktop.ida-mcp
     PackageVersion: ${VERSION}
@@ -258,12 +269,12 @@ publish-winget version:
     else
         git checkout -b "${BRANCH}" upstream/master
     fi
-    mkdir -p "${MANIFEST_DIR}"
-    cp "${OLDPWD}/${MANIFEST_DIR}"/* "${MANIFEST_DIR}/"
+    mkdir -p "${REMOTE_MANIFEST_DIR}"
+    cp "${OLDPWD}/${LOCAL_MANIFEST_DIR}"/* "${REMOTE_MANIFEST_DIR}/"
 
     git config user.name "github-actions[bot]"
     git config user.email "github-actions[bot]@users.noreply.github.com"
-    git add "${MANIFEST_DIR}"
+    git add "${REMOTE_MANIFEST_DIR}"
     if ! git diff --cached --quiet; then
         git commit -m "New version: blacktop.ida-mcp version ${VERSION}"
         git push origin "${BRANCH}"
