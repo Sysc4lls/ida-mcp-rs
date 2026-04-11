@@ -15,6 +15,50 @@ package-artifacts:
             -C "${GITHUB_WORKSPACE}" README.md LICENSE
     }
 
+    package_linux_tar() {
+        local source_dir="$1"
+        local archive_name="$2"
+        local package_dir
+        package_dir="$(mktemp -d)"
+
+        cp "${source_dir}/ida-mcp" "${package_dir}/ida-mcp-bin"
+        chmod +x "${package_dir}/ida-mcp-bin"
+
+        printf '%s\n' \
+            '#!/bin/sh' \
+            'set -eu' \
+            '' \
+            'source_path=$0' \
+            'while [ -L "$source_path" ]; do' \
+            '    source_dir=$(CDPATH= cd -- "$(dirname -- "$source_path")" && pwd)' \
+            '    target=$(readlink "$source_path")' \
+            '    case "$target" in' \
+            '        /*) source_path=$target ;;' \
+            '        *) source_path="${source_dir}/${target}" ;;' \
+            '    esac' \
+            'done' \
+            'bin_dir=$(CDPATH= cd -- "$(dirname -- "$source_path")" && pwd)' \
+            '' \
+            'ida_dir="${IDADIR:-}"' \
+            'runtime_home="${SNAP_REAL_HOME:-${HOME:-}}"' \
+            'if [ -z "$ida_dir" ] && [ -n "$runtime_home" ]; then' \
+            '    ida_dir="${runtime_home}/ida-pro-9.3"' \
+            'fi' \
+            'if [ -n "$ida_dir" ]; then' \
+            '    export LD_LIBRARY_PATH="${ida_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"' \
+            'fi' \
+            '' \
+            'exec "${bin_dir}/ida-mcp-bin" "$@"' \
+            > "${package_dir}/ida-mcp"
+        chmod +x "${package_dir}/ida-mcp"
+
+        tar -czvf "${archive_name}" \
+            -C "${package_dir}" ida-mcp ida-mcp-bin \
+            -C "${GITHUB_WORKSPACE}" README.md LICENSE
+
+        rm -rf "${package_dir}"
+    }
+
     package_zip() {
         local source_dir="$1"
         local archive_name="$2"
@@ -24,8 +68,8 @@ package-artifacts:
             -j "${GITHUB_WORKSPACE}/LICENSE"
     }
 
-    package_tar ida-mcp-linux-x86_64 "ida-mcp_${VERSION}_Linux_x86_64.tar.gz"
-    package_tar ida-mcp-linux-arm64 "ida-mcp_${VERSION}_Linux_arm64.tar.gz"
+    package_linux_tar ida-mcp-linux-x86_64 "ida-mcp_${VERSION}_Linux_x86_64.tar.gz"
+    package_linux_tar ida-mcp-linux-arm64 "ida-mcp_${VERSION}_Linux_arm64.tar.gz"
     package_tar ida-mcp-macos-x86_64 "ida-mcp_${VERSION}_Darwin_x86_64.tar.gz"
     package_tar ida-mcp-macos-arm64 "ida-mcp_${VERSION}_Darwin_arm64.tar.gz"
     package_zip ida-mcp-windows-x86_64 "ida-mcp_${VERSION}_Windows_x86_64.zip"
@@ -148,6 +192,9 @@ publish-nur version:
       installPhase = ''
         mkdir -p $out/bin
         cp -v ./ida-mcp $out/bin/ida-mcp
+        if [ -f ./ida-mcp-bin ]; then
+          cp -v ./ida-mcp-bin $out/bin/ida-mcp-bin
+        fi
       '';
       meta = {
         description = "Headless IDA Pro MCP Server for AI-powered binary analysis";

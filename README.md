@@ -65,20 +65,17 @@ Supported paths (auto-detected):
 
 #### Linux
 
-Standard IDA installations are auto-detected:
+The IDA installer defaults to `~/ida-pro-9.3` — the launcher script auto-detects this:
 ```bash
 claude mcp add ida -- ida-mcp
 ```
 
-If you see library loading errors, set `IDADIR`:
+For non-default install locations, set `IDADIR`:
 ```bash
 claude mcp add ida -e IDADIR='/path/to/ida' -- ida-mcp
 ```
 
-Supported paths (auto-detected):
-- `/opt/idapro-9.3`, `/opt/idapro-9.2`
-- `$HOME/idapro-9.3`, `$HOME/idapro-9.2`
-- `/usr/local/idapro-9.3`, `/usr/local/idapro-9.2`
+Resolution order: `$IDADIR` → `~/ida-pro-9.3` → `/opt/ida-pro-9.3` and other RUNPATH fallbacks.
 
 #### Windows
 
@@ -118,7 +115,7 @@ The binary links against IDA's libraries at runtime. Standard installation paths
 | Platform | Library | Fallback Configuration |
 |----------|---------|------------------------|
 | macOS | `libida.dylib` | `DYLD_LIBRARY_PATH` |
-| Linux | `libida.so` | `IDADIR` or `LD_LIBRARY_PATH` |
+| Linux | `libida.so` | `IDADIR` (launcher reads it) or `LD_LIBRARY_PATH` |
 | Windows | `ida.dll` | Place exe in IDA dir, set `IDADIR`, or add IDA dir to `PATH` |
 
 ### Configure your AI agent

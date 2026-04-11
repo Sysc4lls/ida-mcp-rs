@@ -9,7 +9,8 @@ description: |
   **Requires a licensed IDA Pro 9.x installation on the host.** This snap
   does not bundle IDA — it links against libida.so from your existing
   install. Standard locations (~/ida-pro-9.3, /opt/ida-pro-9.3) are
-  searched automatically; set IDADIR or LD_LIBRARY_PATH for custom paths.
+  searched automatically; set LD_LIBRARY_PATH for custom paths. IDADIR only
+  affects locating idat for DSC extraction workflows.
 
 license: MIT
 source-code: https://github.com/blacktop/ida-mcp-rs
@@ -53,5 +54,7 @@ parts:
       curl -fsSL "${url}" | tar -xz
     organize:
       ida-mcp: bin/ida-mcp
+      ida-mcp-bin: bin/ida-mcp-bin
     stage:
       - bin/ida-mcp
+      - bin/ida-mcp-bin
