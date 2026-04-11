@@ -29,6 +29,12 @@ scoop install blacktop/ida-mcp
 nix shell github:blacktop/nur#ida-mcp
 ```
 
+**Linux** (via [Snap](https://snapcraft.io/ida-mcp))
+```bash
+snap install ida-mcp --classic
+```
+> Pending [classic confinement review](https://forum.snapcraft.io/t/classic-confinement-request-ida-mcp/51001). Until approved, build from source or use Homebrew/Nix.
+
 **Direct download** — grab the archive for your platform from [GitHub Releases](https://github.com/blacktop/ida-mcp-rs/releases).
 
 **Build from source**

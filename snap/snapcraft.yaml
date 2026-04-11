@@ -1,0 +1,57 @@
+name: ida-mcp
+version: '9.3.9'
+summary: Headless IDA Pro MCP Server for AI-powered binary analysis
+description: |
+  ida-mcp exposes IDA Pro's analysis engine over the Model Context Protocol,
+  letting AI assistants disassemble, decompile, and inspect binaries through
+  a headless idalib session.
+
+  **Requires a licensed IDA Pro 9.x installation on the host.** This snap
+  does not bundle IDA — it links against libida.so from your existing
+  install. Standard locations (~/ida-pro-9.3, /opt/ida-pro-9.3) are
+  searched automatically; set IDADIR or LD_LIBRARY_PATH for custom paths.
+
+license: MIT
+source-code: https://github.com/blacktop/ida-mcp-rs
+issues: https://github.com/blacktop/ida-mcp-rs/issues
+contact: https://github.com/blacktop/ida-mcp-rs/issues
+
+base: core24
+grade: stable
+# Classic confinement: ida-mcp dynamically links against libida.so /
+# libidalib.so from a user-installed IDA Pro at arbitrary host paths
+# (e.g. ~/ida-pro-9.3). These are proprietary, non-redistributable
+# Hex-Rays libraries that cannot be staged into the snap. The binary
+# already carries RUNPATH entries for common install locations.
+confinement: classic
+
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+  arm64:
+    build-on: [arm64]
+    build-for: [arm64]
+
+apps:
+  ida-mcp:
+    command: bin/ida-mcp
+
+parts:
+  ida-mcp:
+    plugin: dump
+    source: .
+    build-packages:
+      - curl
+    override-pull: |
+      case "${CRAFT_ARCH_BUILD_FOR}" in
+        amd64) tarball_arch=x86_64 ;;
+        arm64) tarball_arch=arm64 ;;
+        *) echo "unsupported arch: ${CRAFT_ARCH_BUILD_FOR}" >&2; exit 1 ;;
+      esac
+      url="https://github.com/blacktop/ida-mcp-rs/releases/download/v${SNAPCRAFT_PROJECT_VERSION}/ida-mcp_${SNAPCRAFT_PROJECT_VERSION}_Linux_${tarball_arch}.tar.gz"
+      curl -fsSL "${url}" | tar -xz
+    organize:
+      ida-mcp: bin/ida-mcp
+    stage:
+      - bin/ida-mcp

@@ -111,17 +111,6 @@ release-sync-nur version="":
     just _release-banner "Publishing NUR package for ${VERSION}"
     just --justfile "{{ justfile_directory() }}/ci.just" publish-nur "$VERSION"
 
-release-sync-winget version="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    VERSION="{{ version }}"
-    if [[ -z "$VERSION" ]]; then
-        VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-    fi
-    just release-fetch-checksums "$VERSION"
-    just _release-banner "Publishing winget manifests for ${VERSION}"
-    just --justfile "{{ justfile_directory() }}/ci.just" publish-winget "$VERSION"
-
 release-sync version="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -137,8 +126,6 @@ release-sync version="":
     just --justfile "{{ justfile_directory() }}/ci.just" publish-scoop "$VERSION"
     just _release-banner "Publishing NUR package for ${VERSION}"
     just --justfile "{{ justfile_directory() }}/ci.just" publish-nur "$VERSION"
-    just _release-banner "Publishing winget manifests for ${VERSION}"
-    just --justfile "{{ justfile_directory() }}/ci.just" publish-winget "$VERSION"
     just _release-banner "Release sync complete for ${VERSION}"
 
 # Run integration test (debug)
@@ -192,8 +179,9 @@ bump:
         echo "Cargo.toml already at ${VERSION}"
     else
         sed -i '' "s/^version = \"${CURRENT}\"/version = \"${VERSION}\"/" Cargo.toml
+        sed -i '' "s/^version: '${CURRENT}'/version: '${VERSION}'/" snap/snapcraft.yaml
         cargo update -p ida-mcp
-        git add Cargo.toml Cargo.lock
+        git add Cargo.toml Cargo.lock snap/snapcraft.yaml
         git commit -m "chore: release ${VERSION}"
     fi
     git tag -a "$TAG" -m "Release $TAG"

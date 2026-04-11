@@ -199,121 +199,18 @@ publish-nur version:
     git diff --cached --quiet || git commit -m "ida-mcp: v${VERSION}"
     git push
 
-publish-winget version:
+# Snap builds are normally automatic via build.snapcraft.io on tag push.
+# This recipe is a manual fallback: it submits a remote build to Launchpad
+# (works from macOS, no local LXD), waits for both arch builds, then uploads.
+# Prereq: `snapcraft login` and the snap name registered to your account.
+publish-snap channel="edge":
     #!/usr/bin/env bash
     set -euo pipefail
-    VERSION="{{ version }}"
-    WORKDIR="dist/release-sync/${VERSION}"
-    CHECKSUMS_FILE="${WORKDIR}/checksums.txt"
-    : "${VERSION:?VERSION is required}"
-    [ -f "${CHECKSUMS_FILE}" ] || { echo "Missing ${CHECKSUMS_FILE}. Run download-checksums ${VERSION} first."; exit 1; }
-    gh auth status >/dev/null
-    GH_AUTH_TOKEN="$(gh auth token)"
-
-    hash_for() { grep "$1" "${CHECKSUMS_FILE}" | awk '{print $1}'; }
-    WIN_X86_64_HASH_UPPER=$(hash_for "Windows_x86_64.zip" | tr '[:lower:]' '[:upper:]')
-    LOCAL_MANIFEST_DIR="${WORKDIR}/manifests/b/blacktop/ida-mcp/${VERSION}"
-    REMOTE_MANIFEST_DIR="manifests/b/blacktop/ida-mcp/${VERSION}"
-    BRANCH="ida-mcp-${VERSION}"
-
-    mkdir -p "${LOCAL_MANIFEST_DIR}"
-
-    cat > "${LOCAL_MANIFEST_DIR}/blacktop.ida-mcp.yaml" <<EOF
-    # yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
-    PackageIdentifier: blacktop.ida-mcp
-    PackageVersion: ${VERSION}
-    DefaultLocale: en-US
-    ManifestType: version
-    ManifestVersion: 1.6.0
-    EOF
-
-    cat > "${LOCAL_MANIFEST_DIR}/blacktop.ida-mcp.installer.yaml" <<EOF
-    # yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
-    PackageIdentifier: blacktop.ida-mcp
-    PackageVersion: ${VERSION}
-    MinimumOSVersion: 10.0.17763.0
-    InstallerType: zip
-    NestedInstallerType: portable
-    NestedInstallerFiles:
-      - RelativeFilePath: ida-mcp.exe
-        PortableCommandAlias: ida-mcp
-    Installers:
-      - Architecture: x64
-        InstallerUrl: https://github.com/blacktop/ida-mcp-rs/releases/download/v${VERSION}/ida-mcp_${VERSION}_Windows_x86_64.zip
-        InstallerSha256: ${WIN_X86_64_HASH_UPPER}
-    ManifestType: installer
-    ManifestVersion: 1.6.0
-    EOF
-
-    cat > "${LOCAL_MANIFEST_DIR}/blacktop.ida-mcp.locale.en-US.yaml" <<EOF
-    # yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
-    PackageIdentifier: blacktop.ida-mcp
-    PackageVersion: ${VERSION}
-    PackageLocale: en-US
-    Publisher: blacktop
-    PublisherUrl: https://github.com/blacktop
-    PublisherSupportUrl: https://github.com/blacktop/ida-mcp-rs/issues
-    PackageName: ida-mcp
-    PackageUrl: https://github.com/blacktop/ida-mcp-rs
-    License: MIT
-    LicenseUrl: https://github.com/blacktop/ida-mcp-rs/blob/main/LICENSE
-    ShortDescription: Headless IDA Pro MCP Server for AI-powered binary analysis
-    InstallationNotes: |
-      ida-mcp requires IDA Pro 9.x. Set the IDADIR environment variable to your IDA
-      installation path (e.g. setx IDADIR "C:\Program Files\IDA Professional 9.3"),
-      or add the IDA directory to your PATH.
-    Tags:
-      - ida
-      - mcp
-      - reverse-engineering
-      - disassembly
-      - decompiler
-    ManifestType: defaultLocale
-    ManifestVersion: 1.6.0
-    EOF
-
-    TMPDIR="$(mktemp -d)"
-    git clone --depth 1 --sparse \
-        "https://x-access-token:${GH_AUTH_TOKEN}@github.com/blacktop/winget-pkgs.git" \
-        "${TMPDIR}"
-
-    cd "${TMPDIR}"
-    git sparse-checkout set "manifests/b/blacktop"
-    git remote add upstream https://github.com/microsoft/winget-pkgs.git
-    git fetch --depth 1 upstream master
-    if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null 2>&1; then
-        git fetch origin "${BRANCH}:${BRANCH}"
-        git checkout "${BRANCH}"
-    else
-        git checkout -b "${BRANCH}" upstream/master
-    fi
-    mkdir -p "${REMOTE_MANIFEST_DIR}"
-    cp "${OLDPWD}/${LOCAL_MANIFEST_DIR}"/* "${REMOTE_MANIFEST_DIR}/"
-
-    git config user.name "github-actions[bot]"
-    git config user.email "github-actions[bot]@users.noreply.github.com"
-    git add "${REMOTE_MANIFEST_DIR}"
-    if ! git diff --cached --quiet; then
-        git commit -m "New version: blacktop.ida-mcp version ${VERSION}"
-        git push origin "${BRANCH}"
-    fi
-
-    export GH_TOKEN="${GH_AUTH_TOKEN}"
-    if [[ -z "$(gh pr list --repo microsoft/winget-pkgs --head "blacktop:${BRANCH}" --json number --jq '.[0].number // empty')" ]]; then
-        gh pr create \
-            --repo microsoft/winget-pkgs \
-            --head "blacktop:${BRANCH}" \
-            --base master \
-            --title "New version: blacktop.ida-mcp version ${VERSION}" \
-            --body "### Pull request for ida-mcp v${VERSION}
-
-        - [x] Manifest: blacktop.ida-mcp
-        - [x] Version: ${VERSION}
-        - [x] InstallerType: zip (portable)
-        - [x] Architectures: x64
-
-        Created automatically by [ida-mcp release automation](https://github.com/blacktop/ida-mcp-rs)."
-    fi
+    command -v snapcraft >/dev/null || { echo "snapcraft not found; install with: brew install snapcraft" >&2; exit 1; }
+    snapcraft remote-build --launchpad-accept-public-upload
+    for snap in ida-mcp_*.snap; do
+        snapcraft upload "${snap}" --release "{{ channel }}"
+    done
 
 publish-cask version revision="":
     #!/usr/bin/env bash
