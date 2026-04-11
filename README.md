@@ -26,7 +26,8 @@ scoop install blacktop/ida-mcp
 
 **macOS / Linux** (via [Nix](https://nixos.org))
 ```bash
-nix shell github:blacktop/nur#ida-mcp
+nix shell github:blacktop/nur#ida-mcp \
+  --extra-experimental-features 'nix-command flakes'
 ```
 
 **Linux** (via [Snap](https://snapcraft.io/ida-mcp))
