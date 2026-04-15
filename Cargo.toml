@@ -10,7 +10,7 @@ keywords = ["ida", "mcp", "reverse-engineering", "disassembly", "decompiler"]
 categories = ["development-tools", "command-line-utilities"]
 
 [dependencies]
-idalib = { git = "https://github.com/blacktop/idalib.git", branch = "sdk-9.3" }
+idalib = { git = "https://github.com/blacktop/idalib.git", branch = "sdk-9.3.1" }
 rmcp = { version = "1.4", features = ["server", "transport-io", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "net", "signal"] }
 tokio-util = "0.7"
@@ -32,7 +32,7 @@ tower-service = "0.3"
 uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]
-idalib-build = { git = "https://github.com/blacktop/idalib.git", branch = "sdk-9.3", package = "idalib-build" }
+idalib-build = { git = "https://github.com/blacktop/idalib.git", branch = "sdk-9.3.1", package = "idalib-build" }
 
 # [patch."https://github.com/blacktop/idalib.git"]
 # idalib = { path = "../idalib/idalib" }
