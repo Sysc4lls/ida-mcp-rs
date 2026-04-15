@@ -16,7 +16,7 @@
 
 ## Prerequisites
 
-- IDA Pro 9.2+ with valid license
+- IDA Pro 9.2+ with valid license (9.3sp1 recommended)
 
 ## Getting Started
 
@@ -24,7 +24,7 @@
 
 **macOS / Linux** (via [Homebrew](https://brew.sh))
 ```bash
-brew install blacktop/tap/ida-mcp        # Latest (IDA 9.3)
+brew install blacktop/tap/ida-mcp        # Latest (IDA 9.3/9.3sp1)
 brew install blacktop/tap/ida-mcp@9.2    # IDA 9.2
 ```
 
@@ -163,20 +163,23 @@ Add to `.cursor/mcp.json`:
 Once configured, you can analyze binaries through your AI agent:
 
 ```
-# Open a binary (IDA analyzes raw binaries automatically)
+# Open a binary (returns quickly — analysis runs separately)
 open_idb(path: "~/samples/malware")
 
-# Discover available tools
-tool_catalog(query: "find callers")
-
-# List functions
+# These work immediately, no analysis needed
 list_functions(limit: 20)
-
-# Disassemble by name
 disasm_by_name(name: "main", count: 20)
+strings(limit: 10)
 
-# Decompile (requires Hex-Rays)
+# For xrefs/decompile on large binaries, run analysis in background
+analyze_funcs(background: true)   # returns task_id
+task_status(task_id: "analyze-1") # poll progress
+
+# Decompile (requires Hex-Rays + completed analysis)
 decompile(address: "0x100000f00")
+
+# Discover more tools
+tool_catalog(query: "find callers")
 ```
 
 #### `dyld_shared_cache` analysis
