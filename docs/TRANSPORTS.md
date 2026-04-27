@@ -13,15 +13,22 @@
 
 - Supports multiple clients over HTTP.
 - SSE is used for streaming responses within this transport.
-- The server validates Origin headers; defaults allow localhost only.
+- The server validates `Origin` and `Host` headers; defaults allow loopback only.
+  When binding to a non-loopback address, override both allowlists.
 
 ```bash
 ./target/release/ida-mcp serve-http --bind 127.0.0.1:8765
+# Exposing on a LAN: authorize the matching Host and Origin values
+./target/release/ida-mcp serve-http \
+  --bind 0.0.0.0:8765 \
+  --allow-host 10.0.0.5 \
+  --allow-origin http://10.0.0.5:8765
 ```
 
 Options:
 - `--stateless`: POST-only mode (no sessions)
-- `--allow-origin`: comma-separated allowlist
+- `--allow-origin`: comma-separated `Origin` allowlist (default: `http://localhost,http://127.0.0.1`)
+- `--allow-host`: comma-separated `Host` allowlist (default: `localhost,127.0.0.1,::1`; pass an empty value to disable the check)
 - `--sse-keep-alive-secs`: keep-alive interval (0 disables)
 
 ## Concurrency model

@@ -12,6 +12,7 @@ use bytes::Bytes;
 use clap::{Args, Parser, Subcommand};
 use http::{header::ORIGIN, Request, Response, StatusCode};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
+use ida_mcp::server::http_config::{build_streamable_config, HttpServerOptions};
 use ida_mcp::{
     disasm::generate_disasm_line, expand_path, ida, DbInfo, FunctionInfo, IdaMcpServer, IdaWorker,
     ServerMode,
@@ -19,7 +20,7 @@ use ida_mcp::{
 use idalib::{idb::IDBOpenOptions, Address, IDB};
 use rmcp::transport::stdio;
 use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    session::local::LocalSessionManager, StreamableHttpService,
 };
 use rmcp::ServiceExt;
 use std::net::SocketAddr;
@@ -74,6 +75,11 @@ struct ServeHttpArgs {
         default_value = "http://localhost,http://127.0.0.1"
     )]
     allow_origin: Vec<String>,
+    /// Allowed Host header values (comma-separated). Defaults to loopback only;
+    /// override when binding to a non-loopback address (e.g. `--bind 0.0.0.0:8765
+    /// --allow-host <lan-ip>`). Pass an empty value to disable the check.
+    #[arg(long, value_delimiter = ',', default_value = "localhost,127.0.0.1,::1")]
+    allow_host: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -329,17 +335,15 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
         let result = rt.block_on(async move {
             let session_manager = Arc::new(LocalSessionManager::default());
             let cancel = tokio_util::sync::CancellationToken::new();
-            let cancel_for_config = cancel.clone();
-            let config = StreamableHttpServerConfig::default()
-                .with_sse_keep_alive(if args.sse_keep_alive_secs == 0 {
-                    None
-                } else {
-                    Some(Duration::from_secs(args.sse_keep_alive_secs))
-                })
-                .with_sse_retry(None)
-                .with_stateful_mode(!args.stateless)
-                .with_json_response(args.json_response && args.stateless)
-                .with_cancellation_token(cancel_for_config);
+            let config = build_streamable_config(
+                HttpServerOptions {
+                    allow_host: nonempty_trimmed(&args.allow_host).collect(),
+                    sse_keep_alive_secs: args.sse_keep_alive_secs,
+                    stateless: args.stateless,
+                    json_response: args.json_response,
+                },
+                cancel.clone(),
+            );
 
             let service = StreamableHttpService::new(
                 move || {
@@ -351,13 +355,9 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
                 session_manager,
                 config,
             );
-            let allowed_origins: std::collections::HashSet<String> = args
-                .allow_origin
-                .iter()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            let allowed_origins = Arc::new(allowed_origins);
+            let allowed_origins = Arc::new(
+                nonempty_trimmed(&args.allow_origin).collect::<std::collections::HashSet<String>>(),
+            );
             let service = OriginCheckService::new(service, allowed_origins);
 
             let router = Router::new().route_service("/", service);
@@ -402,6 +402,13 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
 
     info!("Server stopped");
     Ok(())
+}
+
+fn nonempty_trimmed(values: &[String]) -> impl Iterator<Item = String> + '_ {
+    values
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn run_probe(args: ProbeArgs) -> anyhow::Result<()> {
@@ -654,4 +661,29 @@ fn disasm_at(db: &IDB, addr: Address, count: usize) -> anyhow::Result<String> {
     }
 
     Ok(lines.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::nonempty_trimmed;
+
+    #[test]
+    fn nonempty_trimmed_drops_blank_and_whitespace_entries() {
+        let input = ["  ", "", " host1 ", "host2"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<_>>();
+        let cleaned: Vec<String> = nonempty_trimmed(&input).collect();
+        assert_eq!(cleaned, vec!["host1".to_string(), "host2".to_string()]);
+    }
+
+    #[test]
+    fn nonempty_trimmed_handles_clap_empty_value() {
+        // `--allow-host=""` parses to vec![""] under clap's value_delimiter,
+        // and TRANSPORTS.md documents that as "disable the check". Verify
+        // the helper collapses it to an empty list, which rmcp treats as
+        // allow-all.
+        let cleaned: Vec<String> = nonempty_trimmed(&[String::new()]).collect();
+        assert!(cleaned.is_empty());
+    }
 }
