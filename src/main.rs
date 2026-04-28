@@ -8,10 +8,8 @@
 //! - Background thread: Runs tokio runtime with async MCP server
 
 use axum::Router;
-use bytes::Bytes;
 use clap::{Args, Parser, Subcommand};
-use http::{header::ORIGIN, Request, Response, StatusCode};
-use http_body_util::{combinators::BoxBody, BodyExt, Full};
+use ida_mcp::server::http_access::{HttpAccessPolicy, HttpAccessService};
 use ida_mcp::server::http_config::{build_streamable_config, HttpServerOptions};
 use ida_mcp::{
     disasm::generate_disasm_line, expand_path, ida, DbInfo, FunctionInfo, IdaMcpServer, IdaWorker,
@@ -31,7 +29,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
-use tower_service::Service;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -75,70 +72,11 @@ struct ServeHttpArgs {
         default_value = "http://localhost,http://127.0.0.1"
     )]
     allow_origin: Vec<String>,
-    /// Allowed Host header values (comma-separated). Defaults to loopback only;
-    /// override when binding to a non-loopback address (e.g. `--bind 0.0.0.0:8765
-    /// --allow-host <lan-ip>`). Pass an empty value to disable the check.
-    #[arg(long, value_delimiter = ',', default_value = "localhost,127.0.0.1,::1")]
-    allow_host: Vec<String>,
-}
-
-#[derive(Clone)]
-struct OriginCheckService<S> {
-    inner: S,
-    allowed_origins: Arc<std::collections::HashSet<String>>,
-}
-
-impl<S> OriginCheckService<S> {
-    fn new(inner: S, allowed_origins: Arc<std::collections::HashSet<String>>) -> Self {
-        Self {
-            inner,
-            allowed_origins,
-        }
-    }
-}
-
-impl<B, S> Service<Request<B>> for OriginCheckService<S>
-where
-    B: http_body::Body + Send + 'static,
-    B::Error: std::fmt::Display,
-    S: Service<
-            Request<B>,
-            Response = Response<BoxBody<Bytes, std::convert::Infallible>>,
-            Error = std::convert::Infallible,
-        > + Clone
-        + Send
-        + 'static,
-    S::Future: Send + 'static,
-{
-    type Response = Response<BoxBody<Bytes, std::convert::Infallible>>;
-    type Error = std::convert::Infallible;
-    type Future = std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
-    >;
-
-    fn poll_ready(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, req: Request<B>) -> Self::Future {
-        let allowed_origins = self.allowed_origins.clone();
-        let mut inner = self.inner.clone();
-        Box::pin(async move {
-            if let Some(origin) = req.headers().get(ORIGIN).and_then(|v| v.to_str().ok()) {
-                if !allowed_origins.contains(origin) {
-                    let resp = Response::builder()
-                        .status(StatusCode::FORBIDDEN)
-                        .body(Full::new(Bytes::from("Forbidden")).boxed())
-                        .expect("valid response");
-                    return Ok(resp);
-                }
-            }
-            inner.call(req).await
-        })
-    }
+    /// Extra allowed Host header values (comma-separated). IP-literal hosts
+    /// reachable through --bind are accepted automatically; add DNS names here.
+    /// Pass `*` or an empty value to disable the Host check.
+    #[arg(long, value_delimiter = ',')]
+    allow_host: Option<Vec<String>>,
 }
 
 #[derive(Args)]
@@ -327,17 +265,36 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
     let worker_for_factory = worker.clone();
     let worker_for_shutdown = worker.clone();
     let server_handle = thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
+        let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
-            .expect("Failed to create tokio runtime");
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                error!("Failed to create tokio runtime: {e}");
+                return;
+            }
+        };
 
         let result = rt.block_on(async move {
+            let listener = tokio::net::TcpListener::bind(bind_addr)
+                .await
+                .map_err(|e| anyhow::anyhow!("bind failed: {e}"))?;
+            let listen_addr = listener
+                .local_addr()
+                .map_err(|e| anyhow::anyhow!("failed to read listener address: {e}"))?;
+
+            let access_policy = HttpAccessPolicy::from_cli(
+                listen_addr,
+                &args.allow_origin,
+                args.allow_host.as_deref(),
+            );
+            info!("HTTP Host guard: {}", access_policy.host_policy_summary());
+
             let session_manager = Arc::new(LocalSessionManager::default());
             let cancel = tokio_util::sync::CancellationToken::new();
             let config = build_streamable_config(
                 HttpServerOptions {
-                    allow_host: nonempty_trimmed(&args.allow_host).collect(),
                     sse_keep_alive_secs: args.sse_keep_alive_secs,
                     stateless: args.stateless,
                     json_response: args.json_response,
@@ -355,16 +312,10 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
                 session_manager,
                 config,
             );
-            let allowed_origins = Arc::new(
-                nonempty_trimmed(&args.allow_origin).collect::<std::collections::HashSet<String>>(),
-            );
-            let service = OriginCheckService::new(service, allowed_origins);
+            let service = HttpAccessService::new(service, access_policy);
 
             let router = Router::new().route_service("/", service);
-            let listener = tokio::net::TcpListener::bind(bind_addr)
-                .await
-                .map_err(|e| anyhow::anyhow!("bind failed: {e}"))?;
-            info!("MCP HTTP server listening on http://{bind_addr}");
+            info!("MCP HTTP server listening on http://{listen_addr}");
 
             let shutdown_worker = worker_for_shutdown.clone();
             let cancel_for_shutdown = cancel.clone();
@@ -402,13 +353,6 @@ fn run_server_http(args: ServeHttpArgs) -> anyhow::Result<()> {
 
     info!("Server stopped");
     Ok(())
-}
-
-fn nonempty_trimmed(values: &[String]) -> impl Iterator<Item = String> + '_ {
-    values
-        .iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
 }
 
 fn run_probe(args: ProbeArgs) -> anyhow::Result<()> {
@@ -661,29 +605,4 @@ fn disasm_at(db: &IDB, addr: Address, count: usize) -> anyhow::Result<String> {
     }
 
     Ok(lines.join("\n"))
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::nonempty_trimmed;
-
-    #[test]
-    fn nonempty_trimmed_drops_blank_and_whitespace_entries() {
-        let input = ["  ", "", " host1 ", "host2"]
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect::<Vec<_>>();
-        let cleaned: Vec<String> = nonempty_trimmed(&input).collect();
-        assert_eq!(cleaned, vec!["host1".to_string(), "host2".to_string()]);
-    }
-
-    #[test]
-    fn nonempty_trimmed_handles_clap_empty_value() {
-        // `--allow-host=""` parses to vec![""] under clap's value_delimiter,
-        // and TRANSPORTS.md documents that as "disable the check". Verify
-        // the helper collapses it to an empty list, which rmcp treats as
-        // allow-all.
-        let cleaned: Vec<String> = nonempty_trimmed(&[String::new()]).collect();
-        assert!(cleaned.is_empty());
-    }
 }

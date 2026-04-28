@@ -24,22 +24,29 @@ launched through the task system (`enqueue_task` + poll `task_status`).
 
 - Supports multiple clients over HTTP.
 - SSE is used for streaming responses within this transport.
-- The server validates `Origin` and `Host` headers; defaults allow loopback only.
-  When binding to a non-loopback address, override both allowlists.
+- The server validates `Origin` and `Host` headers. IP-literal `Host` values
+  that are reachable through the bind address are accepted automatically; DNS
+  names must be added with `--allow-host`.
 
 ```bash
 ./target/release/ida-mcp serve-http --bind 127.0.0.1:8765
-# Exposing on a LAN: authorize the matching Host and Origin values
+# Exposing on a LAN by IP address
 ./target/release/ida-mcp serve-http \
   --bind 0.0.0.0:8765 \
-  --allow-host 10.0.0.5 \
   --allow-origin http://10.0.0.5:8765
+
+# Exposing on a LAN by DNS name
+./target/release/ida-mcp serve-http \
+  --bind 0.0.0.0:8765 \
+  --allow-host ida-box.local \
+  --allow-origin http://ida-box.local:8765
 ```
 
 Options:
 - `--stateless`: POST-only mode (no sessions)
 - `--allow-origin`: comma-separated `Origin` allowlist (default: `http://localhost,http://127.0.0.1`)
-- `--allow-host`: comma-separated `Host` allowlist (default: `localhost,127.0.0.1,::1`; pass an empty value to disable the check)
+- `--allow-host`: comma-separated extra `Host` allowlist for DNS names or
+  alternate authorities; pass a quoted `*` or an empty value to disable the check
 - `--sse-keep-alive-secs`: keep-alive interval (0 disables)
 
 ## Concurrency model

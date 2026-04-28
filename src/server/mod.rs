@@ -1,5 +1,6 @@
 //! MCP server implementation with IDA Pro tools.
 
+pub mod http_access;
 pub mod http_config;
 mod operation;
 mod requests;

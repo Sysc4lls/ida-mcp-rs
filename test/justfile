@@ -122,6 +122,18 @@ test-http: fixture
             ./http_integration.sh
         i=$((i + 1))
     done
+    issue_port=$((port_base + i))
+    issue_host="10.10.10.101:${issue_port}"
+    echo "── LAN Host header regression (#17) ──"
+    RUST_LOG="{{ rust_log }}" IDB_PATH="{{ test_bin }}" \
+        MCP_HTTP_BIN="{{ server_bin }}" MCP_PROTOCOL_VERSION="2025-11-25" \
+        MCP_HTTP_BIND_HOST="0.0.0.0" MCP_HTTP_CONNECT_HOST="127.0.0.1" \
+        MCP_HTTP_HOST_HEADER="${issue_host}" \
+        MCP_HTTP_ORIGIN="http://${issue_host}" \
+        MCP_HTTP_ALLOW_ORIGIN="http://${issue_host}" \
+        MCP_HTTP_ALLOW_HOST="10.10.10.100" \
+        PORT="${issue_port}" \
+        ./http_integration.sh
     echo "✅ HTTP test passed"
 
 # Run IDAPython script integration test
