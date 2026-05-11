@@ -23,7 +23,7 @@ use rmcp::{
     schemars::{schema_for, JsonSchema},
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Duration;
@@ -3790,7 +3790,9 @@ fn bytes_to_ascii(bytes: &[u8]) -> String {
 
 fn tool_params_schema(name: &str) -> Option<Value> {
     fn schema<T: JsonSchema>() -> Value {
-        serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| json!({}))
+        let mut value = serde_json::to_value(schema_for!(T)).unwrap_or_else(|_| json!({}));
+        normalize_schema_value(&mut value);
+        value
     }
 
     match name {
@@ -4133,18 +4135,142 @@ fn apply_tool_metadata(mut tool: Tool) -> Tool {
     tool
 }
 
-/// Strips `$schema` keys from tool input schemas and annotates
-/// task-capable tools with `execution.taskSupport = "optional"`.
-fn sanitize_tool_schemas(result: &mut ListToolsResult) {
-    for tool in &mut result.tools {
-        let schema_arc = &mut tool.input_schema;
-        if let Some(map) = std::sync::Arc::get_mut(schema_arc) {
-            map.remove("$schema");
-        } else {
-            let mut map = (**schema_arc).clone();
-            map.remove("$schema");
-            *schema_arc = std::sync::Arc::new(map);
+fn is_null_schema(value: &Value) -> bool {
+    value
+        .as_object()
+        .and_then(|schema| schema.get("type"))
+        .and_then(Value::as_str)
+        == Some("null")
+}
+
+fn nullable_any_of_replacement(schema: &Map<String, Value>) -> Option<Map<String, Value>> {
+    let any_of = schema.get("anyOf")?.as_array()?;
+    let mut non_null = None;
+    let mut null_count = 0usize;
+
+    for branch in any_of {
+        if is_null_schema(branch) {
+            null_count += 1;
+        } else if non_null.replace(branch).is_some() {
+            return None;
         }
+    }
+
+    if null_count != 1 {
+        return None;
+    }
+
+    let mut replacement = match non_null? {
+        Value::Object(branch) => branch.clone(),
+        Value::Bool(true) => Map::new(),
+        _ => return None,
+    };
+
+    for (key, value) in schema {
+        if key != "anyOf" {
+            replacement.insert(key.clone(), value.clone());
+        }
+    }
+    if replacement.get("default").is_some_and(Value::is_null) {
+        replacement.remove("default");
+    }
+
+    Some(replacement)
+}
+
+fn nullable_type_array_replacement(schema: &Map<String, Value>) -> Option<Option<Value>> {
+    let types = schema.get("type")?.as_array()?;
+    let mut non_null_types = Vec::new();
+    let mut saw_null = false;
+
+    for value in types {
+        if value.as_str() == Some("null") {
+            saw_null = true;
+        } else {
+            non_null_types.push(value.clone());
+        }
+    }
+
+    if !saw_null {
+        return None;
+    }
+
+    Some(match non_null_types.len() {
+        0 => None,
+        1 => non_null_types.into_iter().next(),
+        _ => Some(Value::Array(non_null_types)),
+    })
+}
+
+/// Normalize a JSON Schema produced by schemars into a portable shape
+/// that tool-calling bridges (OpenAPI-strict validators, function-call
+/// translators) can consume without surprises:
+///
+/// - drops `$schema` (Claude Desktop and other clients choke on it);
+/// - collapses `anyOf: [T, {type:"null"}]` (and the `[null, T]` order)
+///   into `T`, lifting schemars' `Option<T>` shape into "field is
+///   optional via `required` array, not via a null-typed branch";
+/// - flattens `type: ["X", "null"]` to `type: "X"` for the same reason.
+///
+/// Existing schema keywords (`description`, `minimum`, `maximum`,
+/// `format`) are preserved. This is general schema cleanup, not a
+/// provider workaround — we keep the request structs portable at the
+/// source (see `src/server/requests.rs`), and the normalizer only
+/// removes shapes schemars emits that are poor for downstream bridges.
+fn normalize_schema_value(value: &mut Value) {
+    match value {
+        Value::Object(schema) => {
+            if let Some(replacement) = nullable_any_of_replacement(schema) {
+                *schema = replacement;
+            }
+            schema.remove("$schema");
+
+            if let Some(type_replacement) = nullable_type_array_replacement(schema) {
+                match type_replacement {
+                    Some(replacement) => {
+                        schema.insert("type".to_string(), replacement);
+                    }
+                    None => {
+                        schema.remove("type");
+                    }
+                }
+            }
+
+            for child in schema.values_mut() {
+                normalize_schema_value(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                normalize_schema_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_tool_input_schema(tool: &mut Tool) {
+    let schema_arc = &mut tool.input_schema;
+    if let Some(map) = std::sync::Arc::get_mut(schema_arc) {
+        let mut value = Value::Object(std::mem::take(map));
+        normalize_schema_value(&mut value);
+        if let Value::Object(sanitized) = value {
+            *map = sanitized;
+        }
+    } else {
+        let mut value = Value::Object((**schema_arc).clone());
+        normalize_schema_value(&mut value);
+        if let Value::Object(sanitized) = value {
+            *schema_arc = std::sync::Arc::new(sanitized);
+        }
+    }
+}
+
+/// Normalize tool input schemas (see [`normalize_schema_value`]) and
+/// annotate task-capable tools with `execution.taskSupport = "optional"`.
+fn normalize_tool_schemas(result: &mut ListToolsResult) {
+    for tool in &mut result.tools {
+        normalize_tool_input_schema(tool);
         set_tool_metadata(tool);
     }
 }
@@ -4184,7 +4310,7 @@ impl<S: ServerHandler + Send + Sync> ServerHandler for SanitizedIdaServer<S> {
                 .tools
                 .retain(|tool| self.filter.is_enabled(&tool.name));
         }
-        sanitize_tool_schemas(&mut result);
+        normalize_tool_schemas(&mut result);
         Ok(result)
     }
 
@@ -4210,7 +4336,10 @@ impl<S: ServerHandler + Send + Sync> ServerHandler for SanitizedIdaServer<S> {
         if self.filter.is_active() && !self.filter.is_enabled(name) {
             return None;
         }
-        self.inner.get_tool(name).map(annotate_task_support)
+        self.inner.get_tool(name).map(|mut tool| {
+            normalize_tool_input_schema(&mut tool);
+            annotate_task_support(tool)
+        })
     }
 
     async fn enqueue_task(
@@ -4264,10 +4393,10 @@ impl<S: ServerHandler + Send + Sync> ServerHandler for SanitizedIdaServer<S> {
 mod tests {
     use crate::ida::worker::CloseTokenGrant;
     use crate::server::{
-        apply_close_metadata, close_hint_for,
+        apply_close_metadata, close_hint_for, normalize_schema_value,
         operation::{OperationSnapshot, OperationStatus},
         run_script_failure_message, run_script_succeeded, run_script_timeout_message,
-        run_script_truncate_chars, task_payload_result_value, IdaMcpServer,
+        run_script_truncate_chars, task_payload_result_value, tool_params_schema, IdaMcpServer,
         RecentOperationsRequest, ToolCatalogRequest, ToolHelpRequest,
     };
     use rmcp::handler::server::wrapper::Parameters;
@@ -4290,6 +4419,37 @@ mod tests {
             .and_then(|content| content.as_text())
             .map(|text| text.text.to_string())
             .unwrap_or_default()
+    }
+
+    fn contains_nullable_any_of(value: &Value) -> bool {
+        match value {
+            Value::Object(map) => {
+                map.get("anyOf")
+                    .and_then(Value::as_array)
+                    .is_some_and(|branches| {
+                        branches.iter().any(|branch| {
+                            branch
+                                .as_object()
+                                .and_then(|schema| schema.get("type"))
+                                .and_then(Value::as_str)
+                                == Some("null")
+                        })
+                    })
+                    || map.values().any(contains_nullable_any_of)
+            }
+            Value::Array(items) => items.iter().any(contains_nullable_any_of),
+            _ => false,
+        }
+    }
+
+    fn contains_schema_key(value: &Value) -> bool {
+        match value {
+            Value::Object(map) => {
+                map.contains_key("$schema") || map.values().any(contains_schema_key)
+            }
+            Value::Array(items) => items.iter().any(contains_schema_key),
+            _ => false,
+        }
     }
 
     #[test]
@@ -4393,6 +4553,98 @@ mod tests {
             IdaMcpServer::open_idb_elicitation_timeout_secs(Some(600)),
             crate::server::OPEN_IDB_ELICITATION_TIMEOUT_SECS
         );
+    }
+
+    #[test]
+    fn normalizer_collapses_nullable_any_of_and_preserves_constraints() {
+        let mut schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "timeout_secs": {
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "description": "Timeout in seconds",
+                    "anyOf": [
+                        { "type": "integer", "format": "int64", "minimum": 0, "maximum": 600 },
+                        { "type": "null" }
+                    ],
+                    "default": null
+                },
+                "query": {
+                    "type": ["string", "null"],
+                    "description": "Optional query"
+                }
+            }
+        });
+
+        normalize_schema_value(&mut schema);
+
+        assert!(!contains_schema_key(&schema));
+        assert!(!contains_nullable_any_of(&schema));
+
+        let timeout = schema
+            .pointer("/properties/timeout_secs")
+            .and_then(Value::as_object)
+            .expect("timeout_secs schema");
+        assert_eq!(timeout.get("type"), Some(&json!("integer")));
+        // Standard JSON Schema keywords (`description`, `minimum`,
+        // `maximum`, `format: int32/int64`) are preserved by the normalizer.
+        assert_eq!(timeout.get("format"), Some(&json!("int64")));
+        assert_eq!(timeout.get("minimum"), Some(&json!(0)));
+        assert_eq!(timeout.get("maximum"), Some(&json!(600)));
+        assert_eq!(
+            timeout.get("description"),
+            Some(&json!("Timeout in seconds"))
+        );
+        assert!(!timeout.contains_key("anyOf"));
+        assert!(!timeout.contains_key("default"));
+
+        let query = schema
+            .pointer("/properties/query")
+            .and_then(Value::as_object)
+            .expect("query schema");
+        assert_eq!(query.get("type"), Some(&json!("string")));
+    }
+
+    #[test]
+    fn generated_tool_param_schemas_are_portable_shape() {
+        // Shape-only check that runs against every registered tool: no
+        // `$schema`, no nullable-anyOf shape. Wire-type portability
+        // (no `uint*` formats) is asserted in the requests-refactor
+        // commit once the source-side change lands.
+        for tool in crate::tool_registry::all_tools() {
+            let Some(schema) = tool_params_schema(tool.name) else {
+                continue;
+            };
+            assert!(
+                !contains_schema_key(&schema),
+                "{} parameters still contain $schema",
+                tool.name
+            );
+            assert!(
+                !contains_nullable_any_of(&schema),
+                "{} parameters still contain nullable anyOf",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn normalizer_preserves_standard_formats() {
+        // The normalizer is intentionally conservative on formats: it
+        // does not strip anything. Wire-side cleanup (no uint*) is done
+        // at the source in src/server/requests.rs, not here.
+        let mut schema = json!({ "type": "integer", "format": "int64", "minimum": 0 });
+        normalize_schema_value(&mut schema);
+        assert_eq!(schema.get("format"), Some(&json!("int64")));
+
+        let mut schema = json!({ "type": "string", "format": "date-time" });
+        normalize_schema_value(&mut schema);
+        assert_eq!(schema.get("format"), Some(&json!("date-time")));
+
+        let mut schema = json!({ "type": "number", "format": "double" });
+        normalize_schema_value(&mut schema);
+        assert_eq!(schema.get("format"), Some(&json!("double")));
     }
 
     #[tokio::test]
