@@ -30,7 +30,8 @@ pub struct OpenIdbRequest {
     )]
     pub auto_analyse: Option<bool>,
     #[schemars(description = "Open timeout in seconds (default 300, max 600).")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 /// Schema for the elicitation prompt used by `open_idb` when the input binary
@@ -74,15 +75,18 @@ pub struct EmptyParams {}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListFunctionsRequest {
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Maximum functions to return (1-10000, default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Optional filter - only return functions containing this text")]
     #[serde(alias = "query", alias = "queries", alias = "filter")]
     pub filter: Option<String>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -95,7 +99,8 @@ pub struct AnalyzeFuncsRequest {
     #[schemars(
         description = "Foreground timeout in seconds (default 120, max 600). Ignored if background=true."
     )]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -113,7 +118,7 @@ pub struct AddrInfoRequest {
     #[serde(alias = "name", alias = "symbol")]
     pub target_name: Option<String>,
     #[schemars(description = "Offset added to resolved name address (default: 0)")]
-    pub offset: Option<u64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -125,7 +130,7 @@ pub struct FunctionAtRequest {
     #[serde(alias = "name", alias = "symbol")]
     pub target_name: Option<String>,
     #[schemars(description = "Offset added to resolved name address (default: 0)")]
-    pub offset: Option<u64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -137,9 +142,10 @@ pub struct DisasmFunctionAtRequest {
     #[serde(alias = "name", alias = "symbol")]
     pub target_name: Option<String>,
     #[schemars(description = "Offset added to resolved name address (default: 0)")]
-    pub offset: Option<u64>,
+    pub offset: Option<i64>,
     #[schemars(description = "Number of instructions (1-5000, default: 200)")]
-    pub count: Option<usize>,
+    #[schemars(range(min = 1, max = 5000))]
+    pub count: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -148,7 +154,8 @@ pub struct DisasmRequest {
     #[serde(alias = "addrs", alias = "addr", alias = "addresses")]
     pub address: Value,
     #[schemars(description = "Number of instructions (1-1000, default: 10)")]
-    pub count: Option<usize>,
+    #[schemars(range(min = 1, max = 5000))]
+    pub count: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -156,7 +163,8 @@ pub struct DisasmByNameRequest {
     #[schemars(description = "Function name to disassemble (exact or partial match)")]
     pub name: String,
     #[schemars(description = "Number of instructions (1-1000, default: 10)")]
-    pub count: Option<usize>,
+    #[schemars(range(min = 1, max = 5000))]
+    pub count: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -169,15 +177,18 @@ pub struct DecompileRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StringsRequest {
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Maximum strings to return (1-10000, default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Optional filter - only return strings containing this text")]
     #[serde(alias = "query")]
     pub filter: Option<String>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -189,12 +200,15 @@ pub struct FindStringRequest {
     #[schemars(description = "Case-insensitive match (default: true)")]
     pub case_insensitive: Option<bool>,
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Maximum strings to return (1-10000, default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -206,28 +220,35 @@ pub struct XrefsToStringRequest {
     #[schemars(description = "Case-insensitive match (default: true)")]
     pub case_insensitive: Option<bool>,
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Maximum strings to return (1-10000, default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Maximum xrefs per string (default: 64, max: 1024)")]
-    pub max_xrefs: Option<usize>,
+    #[schemars(range(min = 1, max = 1024))]
+    pub max_xrefs: Option<i64>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LocalTypesRequest {
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Maximum types to return (1-10000, default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Optional filter - only return types containing this text")]
     #[serde(alias = "query")]
     pub filter: Option<String>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -245,21 +266,25 @@ pub struct DeclareTypeRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StructsRequest {
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Maximum structs to return (1-10000, default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Optional filter - only return structs containing this text")]
     #[serde(alias = "query")]
     pub filter: Option<String>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StructInfoRequest {
     #[schemars(description = "Struct ordinal (numeric)")]
-    pub ordinal: Option<u32>,
+    #[schemars(range(min = 0, max = 4294967295_i64))]
+    pub ordinal: Option<i64>,
     #[schemars(description = "Struct name (exact match)")]
     #[serde(alias = "struct_name", alias = "type_name")]
     pub name: Option<String>,
@@ -271,7 +296,8 @@ pub struct ReadStructRequest {
     #[serde(alias = "ea", alias = "addr", alias = "addresses")]
     pub address: Value,
     #[schemars(description = "Struct ordinal (numeric)")]
-    pub ordinal: Option<u32>,
+    #[schemars(range(min = 0, max = 4294967295_i64))]
+    pub ordinal: Option<i64>,
     #[schemars(description = "Struct name (exact match)")]
     #[serde(alias = "struct_name", alias = "type_name")]
     pub name: Option<String>,
@@ -286,7 +312,7 @@ pub struct ApplyTypesRequest {
     #[serde(alias = "name", alias = "symbol")]
     pub target_name: Option<String>,
     #[schemars(description = "Offset added to resolved name address (default: 0)")]
-    pub offset: Option<u64>,
+    pub offset: Option<i64>,
     #[schemars(description = "Stack variable offset (negative for locals)")]
     pub stack_offset: Option<i64>,
     #[schemars(description = "Stack variable name (when applying to stack var)")]
@@ -312,7 +338,7 @@ pub struct InferTypesRequest {
     #[serde(alias = "name", alias = "symbol")]
     pub target_name: Option<String>,
     #[schemars(description = "Offset added to resolved name address (default: 0)")]
-    pub offset: Option<u64>,
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -350,18 +376,21 @@ pub struct DeleteStackRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct XrefsToFieldRequest {
     #[schemars(description = "Struct ordinal (numeric)")]
-    pub ordinal: Option<u32>,
+    #[schemars(range(min = 0, max = 4294967295_i64))]
+    pub ordinal: Option<i64>,
     #[schemars(description = "Struct name (exact match)")]
     #[serde(alias = "struct_name", alias = "type_name")]
     pub name: Option<String>,
     #[schemars(description = "Struct member index (0-based)")]
-    pub member_index: Option<u32>,
+    #[schemars(range(min = 0, max = 4294967295_i64))]
+    pub member_index: Option<i64>,
     #[schemars(description = "Struct member name (exact match)")]
     #[serde(alias = "member", alias = "field", alias = "field_name")]
     pub member_name: Option<String>,
     #[schemars(description = "Maximum xrefs to return (default: 1000, max: 10000)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -380,10 +409,11 @@ pub struct GetBytesRequest {
     #[serde(alias = "name", alias = "symbol")]
     pub target_name: Option<String>,
     #[schemars(description = "Offset added to resolved name address (default: 0)")]
-    pub offset: Option<u64>,
+    pub offset: Option<i64>,
     #[schemars(description = "Number of bytes to read (1-65536, default: 256)")]
     #[serde(alias = "count")]
-    pub size: Option<usize>,
+    #[schemars(range(min = 1, max = 65536))]
+    pub size: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -395,7 +425,7 @@ pub struct SetCommentsRequest {
     #[serde(alias = "name", alias = "symbol")]
     pub target_name: Option<String>,
     #[schemars(description = "Offset added to resolved name address (default: 0)")]
-    pub offset: Option<u64>,
+    pub offset: Option<i64>,
     #[schemars(description = "Comment text (empty string clears comment)")]
     #[serde(alias = "text", alias = "comment")]
     pub comment: String,
@@ -416,7 +446,7 @@ pub struct RenameRequest {
     #[serde(alias = "new_name", alias = "name")]
     pub name: String,
     #[schemars(description = "IDA set_name flags (optional)")]
-    pub flags: Option<i32>,
+    pub flags: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -428,7 +458,7 @@ pub struct PatchRequest {
     #[serde(alias = "name", alias = "symbol")]
     pub target_name: Option<String>,
     #[schemars(description = "Offset added to resolved name address (default: 0)")]
-    pub offset: Option<u64>,
+    pub offset: Option<i64>,
     #[schemars(
         description = "Bytes to patch (hex string like '90 90' or array of ints/hex strings)"
     )]
@@ -445,7 +475,7 @@ pub struct PatchAsmRequest {
     #[serde(alias = "name", alias = "symbol")]
     pub target_name: Option<String>,
     #[schemars(description = "Offset added to resolved name address (default: 0)")]
-    pub offset: Option<u64>,
+    pub offset: Option<i64>,
     #[schemars(description = "Assembly text to assemble and patch")]
     #[serde(alias = "asm", alias = "instruction")]
     pub line: String,
@@ -454,10 +484,12 @@ pub struct PatchAsmRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PaginatedRequest {
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Maximum items to return (default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -473,12 +505,15 @@ pub struct ListGlobalsRequest {
     #[serde(alias = "filter")]
     pub query: Option<String>,
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Maximum globals to return (default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -487,12 +522,15 @@ pub struct AnalyzeStringsRequest {
     #[serde(alias = "filter")]
     pub query: Option<String>,
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Maximum strings to return (default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -502,11 +540,14 @@ pub struct FindBytesRequest {
     pub patterns: Value,
     #[schemars(description = "Maximum matches to return (default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -519,11 +560,14 @@ pub struct SearchRequest {
     pub kind: Option<String>,
     #[schemars(description = "Maximum matches to return (default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -540,11 +584,13 @@ pub struct FindInsnsRequest {
     pub patterns: Value,
     #[schemars(description = "Maximum matches to return (default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Case-insensitive match (default: false)")]
     pub case_insensitive: Option<bool>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -560,11 +606,13 @@ pub struct FindInsnOperandsRequest {
     pub patterns: Value,
     #[schemars(description = "Maximum matches to return (default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Case-insensitive match (default: false)")]
     pub case_insensitive: Option<bool>,
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -574,9 +622,11 @@ pub struct FindPathsRequest {
     #[schemars(description = "End address (string/number)")]
     pub end: Value,
     #[schemars(description = "Maximum paths to return (default: 8)")]
-    pub max_paths: Option<usize>,
+    #[schemars(range(min = 1, max = 1024))]
+    pub max_paths: Option<i64>,
     #[schemars(description = "Maximum path depth (default: 64)")]
-    pub max_depth: Option<usize>,
+    #[schemars(range(min = 1, max = 256))]
+    pub max_depth: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -591,9 +641,11 @@ pub struct CallGraphRequest {
     )]
     pub roots: Value,
     #[schemars(description = "Maximum depth (default: 2)")]
-    pub max_depth: Option<usize>,
+    #[schemars(range(min = 1, max = 256))]
+    pub max_depth: Option<i64>,
     #[schemars(description = "Maximum nodes (default: 256)")]
-    pub max_nodes: Option<usize>,
+    #[schemars(range(min = 1, max = 10000))]
+    pub max_nodes: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -614,10 +666,12 @@ pub struct ExportFuncsRequest {
     )]
     pub addrs: Option<Value>,
     #[schemars(description = "Offset for pagination (default: 0)")]
-    pub offset: Option<usize>,
+    #[schemars(range(min = 0))]
+    pub offset: Option<i64>,
     #[schemars(description = "Maximum functions to return (default: 100)")]
     #[serde(alias = "count")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
     #[schemars(description = "Export format (only json supported)")]
     pub format: Option<String>,
 }
@@ -628,7 +682,8 @@ pub struct GetStringRequest {
     #[serde(alias = "addrs", alias = "addr", alias = "addresses")]
     pub address: Value,
     #[schemars(description = "Maximum length to read (default: 256)")]
-    pub max_len: Option<usize>,
+    #[schemars(range(min = 1, max = 4096))]
+    pub max_len: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -665,7 +720,8 @@ pub struct ToolCatalogRequest {
     )]
     pub category: Option<String>,
     #[schemars(description = "Maximum number of tools to return (default: 7)")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -677,7 +733,8 @@ pub struct ToolHelpRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RecentOperationsRequest {
     #[schemars(description = "Maximum recent events to return (default: 20, max: 50)")]
-    pub limit: Option<usize>,
+    #[schemars(range(min = 0, max = 10000))]
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -689,7 +746,8 @@ pub struct RunScriptRequest {
     )]
     pub file: Option<String>,
     #[schemars(description = "Execution timeout in seconds (default 120, max 600).")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -709,7 +767,8 @@ pub struct OpenDscRequest {
     #[schemars(description = "Additional frameworks to load (absolute DSC paths).")]
     pub frameworks: Option<Vec<String>>,
     #[schemars(description = "IDA version 8 or 9 (default 9).")]
-    pub ida_version: Option<u8>,
+    #[schemars(range(min = 8, max = 9))]
+    pub ida_version: Option<i64>,
     #[schemars(
         description = "Path for idat's log file (-L). Useful for debugging DSC load failures."
     )]
@@ -723,7 +782,8 @@ pub struct DscAddDylibRequest {
     )]
     pub module: String,
     #[schemars(description = "Timeout in seconds (default 300, max 600).")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -732,5 +792,6 @@ pub struct DscAddRegionRequest {
     #[serde(alias = "ea", alias = "addr")]
     pub address: Value,
     #[schemars(description = "Timeout in seconds (default 300, max 600).")]
-    pub timeout_secs: Option<u64>,
+    #[schemars(range(min = 0, max = 600))]
+    pub timeout_secs: Option<i64>,
 }

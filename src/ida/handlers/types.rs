@@ -148,7 +148,7 @@ pub fn handle_apply_types(
     idb: &Option<IDB>,
     addr: Option<u64>,
     name: Option<&str>,
-    offset: u64,
+    offset: i64,
     stack_offset: Option<i64>,
     stack_name: Option<&str>,
     decl: Option<&str>,
@@ -206,7 +206,7 @@ pub fn handle_infer_types(
     idb: &Option<IDB>,
     addr: Option<u64>,
     name: Option<&str>,
-    offset: u64,
+    offset: i64,
 ) -> Result<GuessTypeResult, ToolError> {
     let db = idb.as_ref().ok_or(ToolError::NoDatabaseOpen)?;
     let address = resolve_address(idb, addr, name, offset)?;

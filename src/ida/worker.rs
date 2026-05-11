@@ -448,7 +448,7 @@ impl IdaWorker {
         &self,
         addr: Option<u64>,
         name: Option<String>,
-        offset: u64,
+        offset: i64,
         stack_offset: Option<i64>,
         stack_name: Option<String>,
         decl: Option<String>,
@@ -479,7 +479,7 @@ impl IdaWorker {
         &self,
         addr: Option<u64>,
         name: Option<String>,
-        offset: u64,
+        offset: i64,
     ) -> Result<GuessTypeResult, ToolError> {
         let (tx, rx) = oneshot::channel();
         self.try_send(IdaRequest::InferTypes {
@@ -496,7 +496,7 @@ impl IdaWorker {
         &self,
         addr: Option<u64>,
         name: Option<String>,
-        offset: u64,
+        offset: i64,
     ) -> Result<AddressInfo, ToolError> {
         let (tx, rx) = oneshot::channel();
         self.try_send(IdaRequest::AddrInfo {
@@ -513,7 +513,7 @@ impl IdaWorker {
         &self,
         addr: Option<u64>,
         name: Option<String>,
-        offset: u64,
+        offset: i64,
     ) -> Result<FunctionRangeInfo, ToolError> {
         let (tx, rx) = oneshot::channel();
         self.try_send(IdaRequest::FunctionAt {
@@ -530,7 +530,7 @@ impl IdaWorker {
         &self,
         addr: Option<u64>,
         name: Option<String>,
-        offset: u64,
+        offset: i64,
         count: usize,
     ) -> Result<String, ToolError> {
         let (tx, rx) = oneshot::channel();
@@ -712,7 +712,7 @@ impl IdaWorker {
         &self,
         addr: Option<u64>,
         name: Option<String>,
-        offset: u64,
+        offset: i64,
         size: usize,
     ) -> Result<BytesResult, ToolError> {
         let (tx, rx) = oneshot::channel();
@@ -731,7 +731,7 @@ impl IdaWorker {
         &self,
         addr: Option<u64>,
         name: Option<String>,
-        offset: u64,
+        offset: i64,
         comment: String,
         repeatable: bool,
     ) -> Result<Value, ToolError> {
@@ -771,7 +771,7 @@ impl IdaWorker {
         &self,
         addr: Option<u64>,
         name: Option<String>,
-        offset: u64,
+        offset: i64,
         bytes: Vec<u8>,
     ) -> Result<Value, ToolError> {
         let (tx, rx) = oneshot::channel();
@@ -790,7 +790,7 @@ impl IdaWorker {
         &self,
         addr: Option<u64>,
         name: Option<String>,
-        offset: u64,
+        offset: i64,
         line: String,
     ) -> Result<Value, ToolError> {
         let (tx, rx) = oneshot::channel();

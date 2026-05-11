@@ -10,7 +10,7 @@ pub fn handle_get_bytes(
     idb: &Option<IDB>,
     addr: Option<u64>,
     name: Option<&str>,
-    offset: u64,
+    offset: i64,
     size: usize,
 ) -> Result<BytesResult, ToolError> {
     let db = idb.as_ref().ok_or(ToolError::NoDatabaseOpen)?;
@@ -36,7 +36,7 @@ pub fn handle_patch_bytes(
     idb: &Option<IDB>,
     addr: Option<u64>,
     name: Option<&str>,
-    offset: u64,
+    offset: i64,
     bytes: &[u8],
 ) -> Result<Value, ToolError> {
     let db = idb.as_ref().ok_or(ToolError::NoDatabaseOpen)?;
@@ -52,7 +52,7 @@ pub fn handle_patch_asm(
     idb: &Option<IDB>,
     addr: Option<u64>,
     name: Option<&str>,
-    offset: u64,
+    offset: i64,
     line: &str,
 ) -> Result<Value, ToolError> {
     let db = idb.as_ref().ok_or(ToolError::NoDatabaseOpen)?;

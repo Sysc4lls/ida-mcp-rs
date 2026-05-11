@@ -70,11 +70,13 @@ pub(crate) fn resolve_address_by_name(idb: &Option<IDB>, name: &str) -> Result<u
 }
 
 /// Resolve an address from either explicit address, name, or name+offset.
+/// `offset` is a signed delta so callers can express `symbol - 0x10` directly;
+/// out-of-range arithmetic surfaces as `InvalidParams` rather than wrapping.
 pub(crate) fn resolve_address(
     idb: &Option<IDB>,
     addr: Option<u64>,
     name: Option<&str>,
-    offset: u64,
+    offset: i64,
 ) -> Result<u64, ToolError> {
     let base = if let Some(addr) = addr {
         addr
@@ -85,7 +87,11 @@ pub(crate) fn resolve_address(
             "expected address or name".to_string(),
         ));
     };
-    Ok(base.saturating_add(offset))
+    base.checked_add_signed(offset).ok_or_else(|| {
+        ToolError::InvalidParams(format!(
+            "offset {offset} produces an out-of-range address from base {base:#x}"
+        ))
+    })
 }
 
 /// Parse a byte pattern string supporting wildcards.

@@ -783,6 +783,39 @@ impl IdaMcpServer {
     }
 }
 
+/// Convert an optional i64 wire field into an unsigned Rust type used by the
+/// worker. Returns InvalidParams if the value is negative or exceeds the
+/// destination type's range — schema `#[schemars(range(...))]` bounds should
+/// keep this from firing in practice, but non-conforming clients still get a
+/// clear error instead of a silent cast.
+fn parse_optional_unsigned<T>(value: Option<i64>, name: &str) -> Result<Option<T>, ToolError>
+where
+    T: TryFrom<i64>,
+{
+    match value {
+        Some(v) => T::try_from(v).map(Some).map_err(|_| {
+            ToolError::InvalidParams(format!(
+                "{name} ({v}) is out of range for {}",
+                std::any::type_name::<T>()
+            ))
+        }),
+        None => Ok(None),
+    }
+}
+
+/// Short-circuit on a `Result<_, ToolError>` from within a `#[tool]` async fn,
+/// surfacing the error to the client as an `is_error: true` CallToolResult
+/// (matching the existing `Err(e) => Ok(e.to_tool_result())` pattern used by
+/// the rest of the handlers).
+macro_rules! try_param {
+    ($expr:expr) => {
+        match $expr {
+            Ok(v) => v,
+            Err(e) => return Ok(e.to_tool_result()),
+        }
+    };
+}
+
 fn close_hint_for(mode: ServerMode) -> &'static str {
     match mode {
         ServerMode::Stdio => "Call close_idb when done to release locks for other sessions.",
@@ -860,6 +893,10 @@ impl IdaMcpServer {
         if !Self::validate_path(&path) {
             return Ok(ToolError::InvalidPath(path).to_tool_result());
         }
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
 
         let user_auto_analyse = req.auto_analyse.unwrap_or(false);
         let large_input_size = if user_auto_analyse && !Self::is_database_path(&path) {
@@ -869,7 +906,7 @@ impl IdaMcpServer {
         };
         let route_to_background = match large_input_size {
             Some(size) => {
-                self.choose_open_idb_background(&ctx, &path, size, req.timeout_secs)
+                self.choose_open_idb_background(&ctx, &path, size, timeout_secs)
                     .await
             }
             None => false,
@@ -884,7 +921,7 @@ impl IdaMcpServer {
                 &ctx,
                 "open_idb",
                 path.clone(),
-                req.timeout_secs,
+                timeout_secs,
                 300,
                 |progress_tx, cancel| {
                     self.worker.open_observed(
@@ -1184,7 +1221,9 @@ impl IdaMcpServer {
         Parameters(req): Parameters<ToolCatalogRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: tool_catalog");
-        let limit = req.limit.unwrap_or(7).min(15);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(7)
+            .min(15);
         let filter = self.filter.clone();
         let filtering_active = filter.is_active();
 
@@ -1351,13 +1390,20 @@ impl IdaMcpServer {
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: list_functions");
         // Clamp limit to prevent excessive responses
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         let filter = req.filter.clone();
 
         match self
             .worker
-            .list_functions(offset, limit, filter, req.timeout_secs)
+            .list_functions(offset, limit, filter, timeout_secs)
             .await
         {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -1374,13 +1420,20 @@ impl IdaMcpServer {
         Parameters(req): Parameters<ListFunctionsRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: list_funcs");
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         let filter = req.filter.clone();
 
         match self
             .worker
-            .list_functions(offset, limit, filter, req.timeout_secs)
+            .list_functions(offset, limit, filter, timeout_secs)
             .await
         {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -1463,7 +1516,9 @@ impl IdaMcpServer {
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: disasm");
         // Clamp instruction count
-        let count = req.count.unwrap_or(10).min(1000);
+        let count = try_param!(parse_optional_unsigned::<usize>(req.count, "count"))
+            .unwrap_or(10)
+            .min(1000);
         let addrs = match Self::value_to_addresses(&req.address) {
             Ok(a) => a,
             Err(e) => return Ok(e.to_tool_result()),
@@ -1502,7 +1557,9 @@ impl IdaMcpServer {
         Parameters(req): Parameters<DisasmByNameRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: disasm_by_name");
-        let count = req.count.unwrap_or(10).min(1000);
+        let count = try_param!(parse_optional_unsigned::<usize>(req.count, "count"))
+            .unwrap_or(10)
+            .min(1000);
 
         match self.worker.disasm_by_name(&req.name, count).await {
             Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
@@ -1523,7 +1580,9 @@ impl IdaMcpServer {
             None => None,
         };
         let offset = req.offset.unwrap_or(0);
-        let count = req.count.unwrap_or(200).min(5000);
+        let count = try_param!(parse_optional_unsigned::<usize>(req.count, "count"))
+            .unwrap_or(200)
+            .min(5000);
         match self
             .worker
             .disasm_function_at(addr, req.target_name.clone(), offset, count)
@@ -1646,12 +1705,19 @@ impl IdaMcpServer {
         Parameters(req): Parameters<StringsRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: strings");
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
 
         match self
             .worker
-            .strings(offset, limit, req.filter, req.timeout_secs)
+            .strings(offset, limit, req.filter, timeout_secs)
             .await
         {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -1668,8 +1734,15 @@ impl IdaMcpServer {
         &self,
         Parameters(req): Parameters<FindStringRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         let exact = req.exact.unwrap_or(false);
         let case_insensitive = req.case_insensitive.unwrap_or(true);
         match self
@@ -1680,7 +1753,7 @@ impl IdaMcpServer {
                 case_insensitive,
                 offset,
                 limit,
-                req.timeout_secs,
+                timeout_secs,
             )
             .await
         {
@@ -1696,11 +1769,19 @@ impl IdaMcpServer {
         &self,
         Parameters(req): Parameters<XrefsToStringRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let max_xrefs =
+            try_param!(parse_optional_unsigned::<usize>(req.max_xrefs, "max_xrefs")).unwrap_or(64);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         let exact = req.exact.unwrap_or(false);
         let case_insensitive = req.case_insensitive.unwrap_or(true);
-        let max_xrefs = req.max_xrefs.unwrap_or(64);
         match self
             .worker
             .xrefs_to_string(
@@ -1710,7 +1791,7 @@ impl IdaMcpServer {
                 offset,
                 limit,
                 max_xrefs,
-                req.timeout_secs,
+                timeout_secs,
             )
             .await
         {
@@ -1810,8 +1891,11 @@ impl IdaMcpServer {
         Parameters(req): Parameters<PaginatedRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: imports");
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
 
         match self.worker.imports(offset, limit).await {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -1828,8 +1912,11 @@ impl IdaMcpServer {
         Parameters(req): Parameters<PaginatedRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: exports");
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
 
         match self.worker.exports(offset, limit).await {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -1858,7 +1945,9 @@ impl IdaMcpServer {
         Parameters(req): Parameters<GetBytesRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: get_bytes");
-        let size = req.size.unwrap_or(256).min(0x10000);
+        let size = try_param!(parse_optional_unsigned::<usize>(req.size, "size"))
+            .unwrap_or(256)
+            .min(0x10000);
         if let Some(addr_value) = req.address.as_ref() {
             let addrs = match Self::value_to_addresses(addr_value) {
                 Ok(a) => a,
@@ -2078,11 +2167,18 @@ impl IdaMcpServer {
         Parameters(req): Parameters<ListGlobalsRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: list_globals");
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         match self
             .worker
-            .list_globals(req.query.clone(), offset, limit, req.timeout_secs)
+            .list_globals(req.query.clone(), offset, limit, timeout_secs)
             .await
         {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -2099,11 +2195,18 @@ impl IdaMcpServer {
         Parameters(req): Parameters<AnalyzeStringsRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: analyze_strings");
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         match self
             .worker
-            .analyze_strings(req.query.clone(), offset, limit, req.timeout_secs)
+            .analyze_strings(req.query.clone(), offset, limit, timeout_secs)
             .await
         {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -2124,9 +2227,15 @@ impl IdaMcpServer {
             Ok(v) => v,
             Err(e) => return Ok(e.to_tool_result()),
         };
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
-        let timeout_secs = req.timeout_secs;
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         let mut results = Vec::new();
 
         for pattern in patterns {
@@ -2184,9 +2293,15 @@ impl IdaMcpServer {
             Ok(v) => v,
             Err(e) => return Ok(e.to_tool_result()),
         };
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
-        let timeout_secs = req.timeout_secs;
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         let kind = req.kind.as_deref().unwrap_or("auto").to_lowercase();
 
         let mut results = Vec::new();
@@ -2300,7 +2415,9 @@ impl IdaMcpServer {
             Ok(v) => v,
             Err(e) => return Ok(e.to_tool_result()),
         };
-        let max_len = req.max_len.unwrap_or(256).min(0x10000);
+        let max_len = try_param!(parse_optional_unsigned::<usize>(req.max_len, "max_len"))
+            .unwrap_or(256)
+            .min(0x10000);
 
         if addrs.len() == 1 {
             match self.worker.get_string(addrs[0], max_len).await {
@@ -2387,8 +2504,12 @@ impl IdaMcpServer {
             Ok(v) => v,
             Err(e) => return Ok(e.to_tool_result()),
         };
-        let max_paths = req.max_paths.unwrap_or(8).min(128);
-        let max_depth = req.max_depth.unwrap_or(64).min(2048);
+        let max_paths = try_param!(parse_optional_unsigned::<usize>(req.max_paths, "max_paths"))
+            .unwrap_or(8)
+            .min(128);
+        let max_depth = try_param!(parse_optional_unsigned::<usize>(req.max_depth, "max_depth"))
+            .unwrap_or(64)
+            .min(2048);
 
         match self
             .worker
@@ -2413,8 +2534,12 @@ impl IdaMcpServer {
             Ok(v) => v,
             Err(e) => return Ok(e.to_tool_result()),
         };
-        let max_depth = req.max_depth.unwrap_or(2).min(16);
-        let max_nodes = req.max_nodes.unwrap_or(256).min(10000);
+        let max_depth = try_param!(parse_optional_unsigned::<usize>(req.max_depth, "max_depth"))
+            .unwrap_or(2)
+            .min(16);
+        let max_nodes = try_param!(parse_optional_unsigned::<usize>(req.max_nodes, "max_nodes"))
+            .unwrap_or(256)
+            .min(10000);
 
         if roots.len() == 1 {
             match self.worker.callgraph(roots[0], max_depth, max_nodes).await {
@@ -2493,8 +2618,11 @@ impl IdaMcpServer {
                 Err(e) => Ok(e.to_tool_result()),
             }
         } else {
-            let limit = req.limit.unwrap_or(100).min(10000);
-            let offset = req.offset.unwrap_or(0);
+            let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+                .unwrap_or(100)
+                .min(10000);
+            let offset =
+                try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
             match self.worker.export_funcs(offset, limit).await {
                 Ok(result) => Ok(CallToolResult::success(vec![Content::text(
                     serde_json::to_string_pretty(&result)
@@ -2554,11 +2682,16 @@ impl IdaMcpServer {
         &self,
         Parameters(req): Parameters<LocalTypesRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let offset = req.offset.unwrap_or(0);
-        let limit = req.limit.unwrap_or(100);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit")).unwrap_or(100);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         match self
             .worker
-            .local_types(offset, limit, req.filter.clone(), req.timeout_secs)
+            .local_types(offset, limit, req.filter.clone(), timeout_secs)
             .await
         {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -2573,13 +2706,20 @@ impl IdaMcpServer {
         &self,
         Parameters(req): Parameters<XrefsToFieldRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let limit = req.limit.unwrap_or(1000).min(10000);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(1000)
+            .min(10000);
+        let ordinal = try_param!(parse_optional_unsigned::<u32>(req.ordinal, "ordinal"));
+        let member_index = try_param!(parse_optional_unsigned::<u32>(
+            req.member_index,
+            "member_index"
+        ));
         match self
             .worker
             .xrefs_to_field(
-                req.ordinal,
+                ordinal,
                 req.name.clone(),
-                req.member_index,
+                member_index,
                 req.member_name.clone(),
                 limit,
             )
@@ -2754,12 +2894,19 @@ impl IdaMcpServer {
         Parameters(req): Parameters<StructsRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: structs");
-        let limit = req.limit.unwrap_or(100).min(10000);
-        let offset = req.offset.unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"))
+            .unwrap_or(100)
+            .min(10000);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
 
         match self
             .worker
-            .structs(offset, limit, req.filter, req.timeout_secs)
+            .structs(offset, limit, req.filter, timeout_secs)
             .await
         {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -2776,7 +2923,8 @@ impl IdaMcpServer {
         Parameters(req): Parameters<StructInfoRequest>,
     ) -> Result<CallToolResult, McpError> {
         debug!("Tool call: struct_info");
-        match self.worker.struct_info(req.ordinal, req.name).await {
+        let ordinal = try_param!(parse_optional_unsigned::<u32>(req.ordinal, "ordinal"));
+        match self.worker.struct_info(ordinal, req.name).await {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&result).unwrap_or_else(|_| format!("{:?}", result)),
             )])),
@@ -2795,13 +2943,10 @@ impl IdaMcpServer {
             Ok(a) => a,
             Err(e) => return Ok(e.to_tool_result()),
         };
+        let ordinal = try_param!(parse_optional_unsigned::<u32>(req.ordinal, "ordinal"));
 
         if addrs.len() == 1 {
-            match self
-                .worker
-                .read_struct(addrs[0], req.ordinal, req.name)
-                .await
-            {
+            match self.worker.read_struct(addrs[0], ordinal, req.name).await {
                 Ok(result) => Ok(CallToolResult::success(vec![Content::text(
                     serde_json::to_string_pretty(&result)
                         .unwrap_or_else(|_| format!("{:?}", result)),
@@ -2813,7 +2958,7 @@ impl IdaMcpServer {
             for addr in addrs {
                 match self
                     .worker
-                    .read_struct(addr, req.ordinal, req.name.clone())
+                    .read_struct(addr, ordinal, req.name.clone())
                     .await
                 {
                     Ok(result) => results.push(json!({
@@ -2838,11 +2983,16 @@ impl IdaMcpServer {
         &self,
         Parameters(req): Parameters<StructsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let offset = req.offset.unwrap_or(0);
-        let limit = req.limit.unwrap_or(100);
+        let offset =
+            try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit")).unwrap_or(100);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         match self
             .worker
-            .structs(offset, limit, req.filter.clone(), req.timeout_secs)
+            .structs(offset, limit, req.filter.clone(), timeout_secs)
             .await
         {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -2864,11 +3014,16 @@ impl IdaMcpServer {
         if patterns.is_empty() {
             return Ok(ToolError::InvalidParams("empty patterns".to_string()).to_tool_result());
         }
-        let max_results = req.limit.unwrap_or(100);
+        let max_results =
+            try_param!(parse_optional_unsigned::<usize>(req.limit, "limit")).unwrap_or(100);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         let case_insensitive = req.case_insensitive.unwrap_or(false);
         match self
             .worker
-            .find_insns(patterns, max_results, case_insensitive, req.timeout_secs)
+            .find_insns(patterns, max_results, case_insensitive, timeout_secs)
             .await
         {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -2890,11 +3045,16 @@ impl IdaMcpServer {
         if patterns.is_empty() {
             return Ok(ToolError::InvalidParams("empty patterns".to_string()).to_tool_result());
         }
-        let max_results = req.limit.unwrap_or(100);
+        let max_results =
+            try_param!(parse_optional_unsigned::<usize>(req.limit, "limit")).unwrap_or(100);
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         let case_insensitive = req.case_insensitive.unwrap_or(false);
         match self
             .worker
-            .find_insn_operands(patterns, max_results, case_insensitive, req.timeout_secs)
+            .find_insn_operands(patterns, max_results, case_insensitive, timeout_secs)
             .await
         {
             Ok(result) => Ok(CallToolResult::success(vec![Content::text(
@@ -2979,12 +3139,16 @@ impl IdaMcpServer {
             return Ok(self.analyze_funcs_background());
         }
 
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ));
         match self
             .run_foreground_operation(
                 &ctx,
                 "analyze_funcs",
                 "current database".to_string(),
-                req.timeout_secs,
+                timeout_secs,
                 120,
                 |progress_tx, cancel| {
                     self.worker
@@ -3099,7 +3263,7 @@ impl IdaMcpServer {
             },
             None => None,
         };
-        let flags = req.flags.unwrap_or(0);
+        let flags = try_param!(parse_optional_unsigned::<i32>(req.flags, "flags")).unwrap_or(0);
         match self
             .worker
             .rename(addr, req.current_name.clone(), req.name.clone(), flags)
@@ -3160,7 +3324,11 @@ impl IdaMcpServer {
             return Ok(ToolError::InvalidPath(req.path).to_tool_result());
         }
 
-        let ida_version = req.ida_version.unwrap_or(9);
+        let ida_version = try_param!(parse_optional_unsigned::<u8>(
+            req.ida_version,
+            "ida_version"
+        ))
+        .unwrap_or(9);
         if ida_version != 8 && ida_version != 9 {
             return Ok(
                 ToolError::InvalidParams("ida_version must be 8 or 9".into()).to_tool_result(),
@@ -3300,7 +3468,14 @@ impl IdaMcpServer {
             .to_tool_result());
         }
 
-        let timeout = Some(req.timeout_secs.unwrap_or(300).min(MAX_TIMEOUT_SECS));
+        let timeout = Some(
+            try_param!(parse_optional_unsigned::<u64>(
+                req.timeout_secs,
+                "timeout_secs"
+            ))
+            .unwrap_or(300)
+            .min(MAX_TIMEOUT_SECS),
+        );
         let script = crate::dsc::dsc_add_dylib_script(&module);
 
         match self.worker.run_script(&script, timeout).await {
@@ -3370,7 +3545,14 @@ impl IdaMcpServer {
             Err(e) => return Ok(e.to_tool_result()),
         };
         let ea_hex = format!("0x{ea:x}");
-        let timeout = Some(req.timeout_secs.unwrap_or(300).min(MAX_TIMEOUT_SECS));
+        let timeout = Some(
+            try_param!(parse_optional_unsigned::<u64>(
+                req.timeout_secs,
+                "timeout_secs"
+            ))
+            .unwrap_or(300)
+            .min(MAX_TIMEOUT_SECS),
+        );
         let script = crate::dsc::dsc_add_region_script(ea);
 
         match self.worker.run_script(&script, timeout).await {
@@ -3488,7 +3670,8 @@ impl IdaMcpServer {
         &self,
         Parameters(req): Parameters<RecentOperationsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let recent: RecentOperations = self.operation_registry.recent(req.limit);
+        let limit = try_param!(parse_optional_unsigned::<usize>(req.limit, "limit"));
+        let recent: RecentOperations = self.operation_registry.recent(limit);
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&recent).unwrap_or_else(|_| format!("{recent:?}")),
         )]))
@@ -3535,7 +3718,12 @@ impl IdaMcpServer {
                 .to_tool_result());
             }
         };
-        let timeout = req.timeout_secs.unwrap_or(120).min(MAX_TIMEOUT_SECS);
+        let timeout = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ))
+        .unwrap_or(120)
+        .min(MAX_TIMEOUT_SECS);
         match self
             .run_foreground_operation(
                 &ctx,
@@ -4452,6 +4640,20 @@ mod tests {
         }
     }
 
+    fn contains_unsigned_format(value: &Value) -> bool {
+        match value {
+            Value::Object(map) => {
+                let format_is_unsigned = map
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .is_some_and(|f| f.starts_with("uint") || f == "uint");
+                format_is_unsigned || map.values().any(contains_unsigned_format)
+            }
+            Value::Array(items) => items.iter().any(contains_unsigned_format),
+            _ => false,
+        }
+    }
+
     #[test]
     fn run_script_succeeded_only_for_explicit_true() {
         assert!(run_script_succeeded(&json!({ "success": true })));
@@ -4607,11 +4809,12 @@ mod tests {
     }
 
     #[test]
-    fn generated_tool_param_schemas_are_portable_shape() {
-        // Shape-only check that runs against every registered tool: no
-        // `$schema`, no nullable-anyOf shape. Wire-type portability
-        // (no `uint*` formats) is asserted in the requests-refactor
-        // commit once the source-side change lands.
+    fn generated_tool_param_schemas_are_portable() {
+        // Every registered tool's `parameters` schema must be portable across
+        // strict JSON-schema-subset consumers (notably Vertex/Gemini): no
+        // `$schema` key, no nullable-anyOf shape, and no `uint*` formats
+        // emitted by schemars from unsigned Rust integer types — those would
+        // be rejected by OpenAPI-3-flavored validators.
         for tool in crate::tool_registry::all_tools() {
             let Some(schema) = tool_params_schema(tool.name) else {
                 continue;
@@ -4624,6 +4827,11 @@ mod tests {
             assert!(
                 !contains_nullable_any_of(&schema),
                 "{} parameters still contain nullable anyOf",
+                tool.name
+            );
+            assert!(
+                !contains_unsigned_format(&schema),
+                "{} parameters still contain a uint* format — convert the field to i64 + #[schemars(range(...))]",
                 tool.name
             );
         }

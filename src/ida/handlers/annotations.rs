@@ -9,7 +9,7 @@ pub fn handle_set_comments(
     idb: &Option<IDB>,
     addr: Option<u64>,
     name: Option<&str>,
-    offset: u64,
+    offset: i64,
     comment: &str,
     repeatable: bool,
 ) -> Result<Value, ToolError> {
