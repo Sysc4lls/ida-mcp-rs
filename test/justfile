@@ -73,19 +73,19 @@ test: fixture
     # Known expected errors:
     # - patch_asm on ARM (no assembler support)
     # - stack_frame at non-function address
-    error_count="$(rg -c '"isError"\s*:\s*true' "$tmp" || echo 0)"
+    error_count="$(grep -Ec '"isError"[[:space:]]*:[[:space:]]*true' "$tmp" || true)"
     if [ "$error_count" -gt 2 ]; then
         echo "❌ Expected at most 2 known errors, got $error_count"
         rm -f "$tmp"
         exit 1
     fi
-    if ! rg -q 'function_count' "$tmp"; then
+    if ! grep -q 'function_count' "$tmp"; then
         echo "❌ open_idb did not complete successfully"
         cat "$tmp"
         rm -f "$tmp"
         exit 1
     fi
-    if ! rg -q 'Database closed' "$tmp"; then
+    if ! grep -q 'Database closed' "$tmp"; then
         echo "❌ close_idb did not complete successfully"
         cat "$tmp"
         rm -f "$tmp"
@@ -110,19 +110,19 @@ test-license: fixture
       '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"open_idb","arguments":{"path":"{{ test_bin }}"}}}' \
       '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"close_idb","arguments":{}}}' \
       | RUST_LOG="{{ rust_log }}" "{{ server_bin }}" serve >/dev/null 2>"$log" || true
-    if rg -q 'IDA license expired|IDA license is invalid' "$log"; then
+    if grep -Eq 'IDA license expired|IDA license is invalid' "$log"; then
         echo "❌ License preflight reports an unhealthy license:" >&2
-        rg 'IDA license' "$log" >&2
+        grep -E 'IDA license' "$log" >&2
         rm -f "$log"
         exit 1
     fi
-    if ! rg -q 'IDA license valid' "$log" && ! rg -q 'IDA license expires in' "$log"; then
+    if ! grep -Eq 'IDA license valid' "$log" && ! grep -Eq 'IDA license expires in' "$log"; then
         echo "❌ License preflight did not run (no expiry log line). Init log tail:" >&2
-        rg 'Initializing|runtime version|license' "$log" >&2 || tail -20 "$log" >&2
+        grep -E 'Initializing|runtime version|license' "$log" >&2 || tail -20 "$log" >&2
         rm -f "$log"
         exit 1
     fi
-    rg 'IDA license' "$log"
+    grep -E 'IDA license' "$log"
     rm -f "$log"
     echo "✅ License preflight test passed"
 
