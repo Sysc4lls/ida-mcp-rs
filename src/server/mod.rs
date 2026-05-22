@@ -11,6 +11,7 @@ pub use requests::*;
 
 use crate::error::ToolError;
 use crate::ida::observability::{ProgressReceiver, ProgressSender};
+use crate::ida::pool::CHILD_TIMEOUT_GRACE_SECS;
 use crate::ida::worker::{
     CloseAuthorization, CloseTokenGrant, IdaWorker, WorkerBackend, MAX_TIMEOUT_SECS,
 };
@@ -31,6 +32,28 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
+struct SessionLifetime {
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+impl SessionLifetime {
+    fn new() -> Self {
+        Self {
+            cancel: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    fn child_token(&self) -> tokio_util::sync::CancellationToken {
+        self.cancel.child_token()
+    }
+}
+
+impl Drop for SessionLifetime {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 /// MCP server for IDA Pro analysis
 #[derive(Clone)]
 pub struct IdaMcpServer {
@@ -40,6 +63,7 @@ pub struct IdaMcpServer {
     task_registry: task::TaskRegistry,
     operation_registry: OperationRegistry,
     operation_nonce: Arc<AtomicU64>,
+    session_lifetime: Arc<SessionLifetime>,
     /// Unique ID for this server instance. Changes on restart, making silent
     /// auto-restarts (e.g. after a Hex-Rays C++ crash) visible to agents.
     session_id: String,
@@ -102,6 +126,40 @@ struct DscBackgroundCtx {
     owner_session_id: Option<String>,
 }
 
+struct TemporaryFileCleanup {
+    path: Option<std::path::PathBuf>,
+}
+
+impl TemporaryFileCleanup {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path: Some(path) }
+    }
+
+    fn cleanup_now(&mut self) {
+        if let Some(path) = self.path.take() {
+            remove_temporary_file(&path);
+        }
+    }
+}
+
+impl Drop for TemporaryFileCleanup {
+    fn drop(&mut self) {
+        self.cleanup_now();
+    }
+}
+
+fn remove_temporary_file(path: &std::path::Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => warn!(
+            path = %path.display(),
+            error = %err,
+            "failed to remove temporary file"
+        ),
+    }
+}
+
 /// Inputs above this size automatically route `open_idb(auto_analyse=true)`
 /// to the background analysis path (asking the user via MCP elicitation when the
 /// client supports it). 50 MiB chosen empirically — kernelcaches and DSCs are
@@ -133,6 +191,13 @@ enum ForegroundOperationError {
     },
 }
 
+fn timeout_with_child_grace(timeout_secs: Option<u64>, default_timeout_secs: u64) -> u64 {
+    timeout_secs
+        .unwrap_or(default_timeout_secs)
+        .min(MAX_TIMEOUT_SECS)
+        .saturating_add(CHILD_TIMEOUT_GRACE_SECS)
+}
+
 impl IdaMcpServer {
     pub fn new(worker: Arc<IdaWorker>, mode: ServerMode) -> Self {
         Self::with_filter(
@@ -162,6 +227,7 @@ impl IdaMcpServer {
             task_registry: task::TaskRegistry::new(),
             operation_registry: OperationRegistry::new(),
             operation_nonce: Arc::new(AtomicU64::new(0)),
+            session_lifetime: Arc::new(SessionLifetime::new()),
             session_id,
             filter,
         }
@@ -457,6 +523,17 @@ impl IdaMcpServer {
         }
     }
 
+    fn foreground_timeout_secs(
+        &self,
+        timeout_secs: Option<u64>,
+        default_timeout_secs: u64,
+    ) -> Option<u64> {
+        if self.worker.is_pooled() {
+            return Some(timeout_with_child_grace(timeout_secs, default_timeout_secs));
+        }
+        timeout_secs
+    }
+
     async fn run_foreground_operation<T, F, Fut>(
         &self,
         ctx: &RequestContext<RoleServer>,
@@ -703,6 +780,7 @@ impl IdaMcpServer {
         worker: WorkerBackend,
         mode: ServerMode,
         ctx: DscBackgroundCtx,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) {
         let DscBackgroundCtx {
             idat,
@@ -715,6 +793,13 @@ impl IdaMcpServer {
             owner_session_id,
         } = ctx;
 
+        let mut script_cleanup = TemporaryFileCleanup::new(script_path);
+
+        if cancel_token.is_cancelled() {
+            registry.finish_cancelled(&task_id, "Cancelled by session shutdown");
+            return;
+        }
+
         // Phase 1: run idat subprocess
         info!(task_id = %task_id, "Background: running idat");
         registry.update_message(&task_id, "Running idat to create .i64...");
@@ -724,7 +809,7 @@ impl IdaMcpServer {
         let out_i64_clone = out_i64.clone();
         let log_path_clone = log_path.clone();
 
-        let spawn_result = tokio::task::spawn_blocking(move || {
+        let spawn_task = tokio::task::spawn_blocking(move || {
             let mut cmd = std::process::Command::new(&idat_bin);
             cmd.args(&idat_args);
             // Remove env vars that cause license conflicts when our
@@ -750,20 +835,26 @@ impl IdaMcpServer {
                     log_path_clone,
                 ),
             }
-        })
-        .await;
+        });
+
+        let spawn_result = tokio::select! {
+            result = spawn_task => result,
+            _ = cancel_token.cancelled() => {
+                registry.finish_cancelled(&task_id, "Cancelled by session shutdown");
+                return;
+            }
+        };
 
         let (exit_code, stderr, out_path, log_out) = match spawn_result {
             Ok(tuple) => tuple,
             Err(e) => {
-                let _ = std::fs::remove_file(&script_path);
                 registry.fail(&task_id, &format!("idat task panicked: {e}"));
                 return;
             }
         };
 
-        // Clean up the temporary load script (idat is done with it).
-        let _ = std::fs::remove_file(&script_path);
+        // Clean up the temporary load script now; the guard still covers early returns above.
+        script_cleanup.cleanup_now();
 
         if exit_code != 0 || !out_path.exists() {
             let log_tail = log_out
@@ -790,7 +881,19 @@ impl IdaMcpServer {
         // Phase 2: open the .i64 with idalib
         let i64_str = out_i64.display().to_string();
         let open_result = worker
-            .open(&i64_str, false, None, false, false, None, true, Vec::new())
+            .open_observed(
+                &i64_str,
+                false,
+                None,
+                false,
+                false,
+                None,
+                true,
+                Vec::new(),
+                None,
+                None,
+                Some(cancel_token.clone()),
+            )
             .await;
 
         let db_info = match open_result {
@@ -942,6 +1045,13 @@ impl IdaMcpServer {
 
         let debug_info_path = req.normalized_debug_info_path();
         let file_type = req.normalized_file_type();
+        let worker_extra_args = if matches!(self.mode, ServerMode::Worker) {
+            req.worker_extra_args.clone()
+        } else {
+            Vec::new()
+        };
+        let open_timeout_secs = timeout_secs.unwrap_or(300).min(MAX_TIMEOUT_SECS);
+        let foreground_timeout_secs = self.foreground_timeout_secs(timeout_secs, 300);
         let user_auto_analyse = req.auto_analyse.unwrap_or(false);
         let large_input_size = if !matches!(self.mode, ServerMode::Worker)
             && user_auto_analyse
@@ -968,7 +1078,7 @@ impl IdaMcpServer {
                 &ctx,
                 "open_idb",
                 path.clone(),
-                timeout_secs,
+                foreground_timeout_secs,
                 300,
                 |progress_tx, cancel| {
                     self.worker.open_observed(
@@ -979,7 +1089,8 @@ impl IdaMcpServer {
                         req.force.unwrap_or(false),
                         file_type.clone(),
                         effective_auto_analyse,
-                        Vec::new(),
+                        worker_extra_args.clone(),
+                        Some(open_timeout_secs),
                         Some(progress_tx),
                         Some(cancel),
                     )
@@ -2282,14 +2393,24 @@ impl IdaMcpServer {
             .min(10000);
         let offset =
             try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let worker_max_results = if matches!(self.mode, ServerMode::Worker) {
+            try_param!(parse_optional_unsigned::<usize>(
+                req.worker_max_results,
+                "_worker_max_results"
+            ))
+            .map(|value| value.min(20000))
+        } else {
+            None
+        };
         let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
             req.timeout_secs,
             "timeout_secs"
         ));
+        let response_limit = worker_max_results.unwrap_or(limit);
         let mut results = Vec::new();
 
         for pattern in patterns {
-            let max_results = (offset + limit).min(20000);
+            let max_results = worker_max_results.unwrap_or_else(|| (offset + limit).min(20000));
             match self
                 .worker
                 .find_bytes(pattern.clone(), max_results, timeout_secs)
@@ -2305,10 +2426,10 @@ impl IdaMcpServer {
                     let sliced = matches
                         .into_iter()
                         .skip(offset)
-                        .take(limit)
+                        .take(response_limit)
                         .collect::<Vec<_>>();
-                    let next_offset = if offset + limit < total {
-                        Some(offset + limit)
+                    let next_offset = if offset + response_limit < total {
+                        Some(offset + response_limit)
                     } else {
                         None
                     };
@@ -2348,15 +2469,25 @@ impl IdaMcpServer {
             .min(10000);
         let offset =
             try_param!(parse_optional_unsigned::<usize>(req.offset, "offset")).unwrap_or(0);
+        let worker_max_results = if matches!(self.mode, ServerMode::Worker) {
+            try_param!(parse_optional_unsigned::<usize>(
+                req.worker_max_results,
+                "_worker_max_results"
+            ))
+            .map(|value| value.min(20000))
+        } else {
+            None
+        };
         let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
             req.timeout_secs,
             "timeout_secs"
         ));
         let kind = req.kind.as_deref().unwrap_or("auto").to_lowercase();
 
+        let response_limit = worker_max_results.unwrap_or(limit);
         let mut results = Vec::new();
         for target in targets {
-            let max_results = (offset + limit).min(20000);
+            let max_results = worker_max_results.unwrap_or_else(|| (offset + limit).min(20000));
             let search_result = if kind == "imm" || kind == "immediate" {
                 match Self::parse_address(&target) {
                     Ok(val) => self.worker.search_imm(val, max_results, timeout_secs).await,
@@ -2391,10 +2522,10 @@ impl IdaMcpServer {
                     let sliced = matches
                         .into_iter()
                         .skip(offset)
-                        .take(limit)
+                        .take(response_limit)
                         .collect::<Vec<_>>();
-                    let next_offset = if offset + limit < total {
-                        Some(offset + limit)
+                    let next_offset = if offset + response_limit < total {
+                        Some(offset + response_limit)
                     } else {
                         None
                     };
@@ -3185,6 +3316,19 @@ impl IdaMcpServer {
         ctx: RequestContext<RoleServer>,
         Parameters(req): Parameters<AnalyzeFuncsRequest>,
     ) -> Result<CallToolResult, McpError> {
+        if matches!(self.mode, ServerMode::Worker) && req.worker_no_timeout {
+            return match self
+                .worker
+                .analyze_funcs_unbounded_observed(None, Some(ctx.ct.clone()))
+                .await
+            {
+                Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&result)
+                        .unwrap_or_else(|_| format!("{:?}", result)),
+                )])),
+                Err(e) => Ok(e.to_tool_result()),
+            };
+        }
         if req.background.unwrap_or(false) {
             return Ok(self.analyze_funcs_background());
         }
@@ -3193,16 +3337,21 @@ impl IdaMcpServer {
             req.timeout_secs,
             "timeout_secs"
         ));
+        let analyze_timeout_secs = timeout_secs.unwrap_or(120).min(MAX_TIMEOUT_SECS);
+        let foreground_timeout_secs = self.foreground_timeout_secs(timeout_secs, 120);
         match self
             .run_foreground_operation(
                 &ctx,
                 "analyze_funcs",
                 "current database".to_string(),
-                timeout_secs,
+                foreground_timeout_secs,
                 120,
                 |progress_tx, cancel| {
-                    self.worker
-                        .analyze_funcs_observed(Some(progress_tx), Some(cancel))
+                    self.worker.analyze_funcs_observed(
+                        Some(progress_tx),
+                        Some(cancel),
+                        Some(analyze_timeout_secs),
+                    )
                 },
             )
             .await
@@ -3266,7 +3415,7 @@ impl IdaMcpServer {
         let registry = self.task_registry.clone();
         let worker = self.worker.clone();
         let tid = task_id.clone();
-        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cancel_token = self.session_lifetime.child_token();
         let worker_cancel_token = cancel_token.clone();
 
         let handle = tokio::spawn(async move {
@@ -3283,7 +3432,7 @@ impl IdaMcpServer {
             });
 
             match worker
-                .analyze_funcs_observed(Some(tx), Some(worker_cancel_token))
+                .analyze_funcs_unbounded_observed(Some(tx), Some(worker_cancel_token))
                 .await
             {
                 Ok(value) => {
@@ -3476,10 +3625,13 @@ impl IdaMcpServer {
                 .then(|| self.session_id.clone()),
         };
 
+        let cancel_token = self.session_lifetime.child_token();
+        let task_cancel_token = cancel_token.clone();
         let handle = tokio::spawn(async move {
-            Self::run_dsc_background(tid, registry, worker, mode, ctx).await;
+            Self::run_dsc_background(tid, registry, worker, mode, ctx, task_cancel_token).await;
         });
-        self.task_registry.set_handle(&task_id, handle);
+        self.task_registry
+            .set_handle_with_cancel_token(&task_id, handle, cancel_token);
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&json!({
@@ -3518,14 +3670,13 @@ impl IdaMcpServer {
             .to_tool_result());
         }
 
-        let timeout = Some(
-            try_param!(parse_optional_unsigned::<u64>(
-                req.timeout_secs,
-                "timeout_secs"
-            ))
-            .unwrap_or(300)
-            .min(MAX_TIMEOUT_SECS),
-        );
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ))
+        .unwrap_or(300)
+        .min(MAX_TIMEOUT_SECS);
+        let timeout = Some(timeout_secs);
         let script = crate::dsc::dsc_add_dylib_script(&module);
 
         match self.worker.run_script(&script, timeout).await {
@@ -3569,6 +3720,11 @@ impl IdaMcpServer {
                 warn!(module = %module, timeout_secs = secs, "dsc_add_dylib timed out");
                 Ok(ToolError::IdaError(message).to_tool_result())
             }
+            Err(ToolError::TimeoutDetailed(_)) => {
+                let message = run_script_timeout_message(timeout_secs, &script);
+                warn!(module = %module, timeout_secs, "dsc_add_dylib timed out");
+                Ok(ToolError::IdaError(message).to_tool_result())
+            }
             Err(e) => Ok(e.to_tool_result()),
         }
     }
@@ -3595,14 +3751,13 @@ impl IdaMcpServer {
             Err(e) => return Ok(e.to_tool_result()),
         };
         let ea_hex = format!("0x{ea:x}");
-        let timeout = Some(
-            try_param!(parse_optional_unsigned::<u64>(
-                req.timeout_secs,
-                "timeout_secs"
-            ))
-            .unwrap_or(300)
-            .min(MAX_TIMEOUT_SECS),
-        );
+        let timeout_secs = try_param!(parse_optional_unsigned::<u64>(
+            req.timeout_secs,
+            "timeout_secs"
+        ))
+        .unwrap_or(300)
+        .min(MAX_TIMEOUT_SECS);
+        let timeout = Some(timeout_secs);
         let script = crate::dsc::dsc_add_region_script(ea);
 
         match self.worker.run_script(&script, timeout).await {
@@ -3655,6 +3810,15 @@ impl IdaMcpServer {
                 warn!(
                     address = %ea_hex,
                     timeout_secs = secs,
+                    "dsc_add_region timed out"
+                );
+                Ok(ToolError::IdaError(message).to_tool_result())
+            }
+            Err(ToolError::TimeoutDetailed(_)) => {
+                let message = run_script_timeout_message(timeout_secs, &script);
+                warn!(
+                    address = %ea_hex,
+                    timeout_secs,
                     "dsc_add_region timed out"
                 );
                 Ok(ToolError::IdaError(message).to_tool_result())
@@ -3774,16 +3938,21 @@ impl IdaMcpServer {
         ))
         .unwrap_or(120)
         .min(MAX_TIMEOUT_SECS);
+        let foreground_timeout_secs = self.foreground_timeout_secs(Some(timeout), 120);
         match self
             .run_foreground_operation(
                 &ctx,
                 "run_script",
                 format!("code_len={}", code.len()),
-                Some(timeout),
+                foreground_timeout_secs,
                 120,
                 |progress_tx, cancel| {
-                    self.worker
-                        .run_script_observed(&code, Some(progress_tx), Some(cancel))
+                    self.worker.run_script_observed(
+                        &code,
+                        Some(progress_tx),
+                        Some(cancel),
+                        Some(timeout),
+                    )
                 },
             )
             .await
@@ -4635,8 +4804,9 @@ mod tests {
         apply_close_metadata, close_hint_for, normalize_schema_value,
         operation::{OperationSnapshot, OperationStatus},
         run_script_failure_message, run_script_succeeded, run_script_timeout_message,
-        run_script_truncate_chars, task_payload_result_value, tool_params_schema, IdaMcpServer,
-        RecentOperationsRequest, ToolCatalogRequest, ToolHelpRequest,
+        run_script_truncate_chars, task_payload_result_value, timeout_with_child_grace,
+        tool_params_schema, IdaMcpServer, RecentOperationsRequest, ToolCatalogRequest,
+        ToolHelpRequest,
     };
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::CallToolResult;
@@ -4725,6 +4895,13 @@ mod tests {
         assert!(message.contains("IDAPython script execution failed"));
         assert!(message.contains("SyntaxError"));
         assert!(message.contains("Hint: Python syntax error detected"));
+    }
+
+    #[test]
+    fn pooled_foreground_timeout_gets_child_grace() {
+        assert_eq!(timeout_with_child_grace(None, 300), 310);
+        assert_eq!(timeout_with_child_grace(Some(120), 300), 130);
+        assert_eq!(timeout_with_child_grace(Some(9999), 300), 610);
     }
 
     #[test]

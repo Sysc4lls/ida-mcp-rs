@@ -49,7 +49,7 @@ pub(crate) fn acquire_mcp_lock(db_path: &Path) -> Result<McpLock, ToolError> {
         .read(true)
         .write(true)
         .create(true)
-        .truncate(true)
+        .truncate(false)
         .open(&lock_path)
         .map_err(|e| ToolError::OpenFailed(format!("{}: {}", lock_path.display(), e)))?;
 
@@ -102,6 +102,34 @@ pub(crate) fn release_mcp_lock(lock_file: &mut Option<File>, lock_path: &mut Opt
 pub(crate) fn release_mcp_lock_file(lock: McpLock) {
     let (_file, path) = lock.into_parts();
     let _ = std::fs::remove_file(path);
+}
+
+/// Remove a lock file that still belongs to a worker process the pool killed.
+pub(crate) fn remove_mcp_lock_for_pid(db_path: &Path, pid: Option<u32>) {
+    let Some(pid) = pid else {
+        return;
+    };
+
+    let mut lock_path = db_path.to_path_buf();
+    lock_path.set_extension("imcp");
+    if read_lock_file_pid(&lock_path) != Some(pid) {
+        return;
+    }
+
+    if let Err(err) = std::fs::remove_file(&lock_path) {
+        warn!(
+            path = %lock_path.display(),
+            pid,
+            error = %err,
+            "failed to remove killed worker MCP lock file"
+        );
+    } else {
+        info!(
+            path = %lock_path.display(),
+            pid,
+            "removed killed worker MCP lock file"
+        );
+    }
 }
 
 /// Information about a stale lock that was cleaned up.
@@ -289,8 +317,8 @@ fn try_lock_file(file: &File) -> Result<(), u32> {
 }
 
 #[cfg(not(unix))]
-fn try_lock_file(_file: &File) -> Result<(), u32> {
-    Ok(())
+fn try_lock_file(file: &File) -> Result<(), u32> {
+    file.try_lock().map_err(|_| 0)
 }
 
 #[cfg(unix)]
@@ -328,8 +356,19 @@ fn locked_by_pid(path: &Path) -> Option<u32> {
 }
 
 #[cfg(not(unix))]
-fn locked_by_pid(_path: &Path) -> Option<u32> {
-    None
+fn locked_by_pid(path: &Path) -> Option<u32> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .or_else(|_| std::fs::OpenOptions::new().read(true).open(path))
+        .ok()?;
+
+    if try_lock_file(&file).is_ok() {
+        return None;
+    }
+
+    read_lock_file_pid(path).or(Some(0))
 }
 
 #[cfg(unix)]

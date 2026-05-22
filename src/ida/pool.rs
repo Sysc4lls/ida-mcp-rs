@@ -1,9 +1,11 @@
 //! Multi-process worker pool for HTTP sessions.
 
 use crate::error::ToolError;
+use crate::ida::lock::remove_mcp_lock_for_pid;
 use crate::ida::observability::ProgressSender;
 use crate::ida::remote;
 use crate::ida::types::*;
+use crate::ida::worker::MAX_TIMEOUT_SECS;
 use futures_util::future::join_all;
 use rmcp::handler::client::ClientHandler;
 use rmcp::model::{CallToolResult, ClientInfo, JsonObject, LoggingMessageNotificationParam};
@@ -18,7 +20,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -26,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 const CHILD_CLOSE_TIMEOUT_SECS: u64 = 5;
+pub(crate) const CHILD_TIMEOUT_GRACE_SECS: u64 = 10;
 
 #[derive(Debug, Clone)]
 pub struct WorkerPoolConfig {
@@ -70,6 +73,7 @@ struct DeadWorker {
     service: Option<RunningService<RoleClient, ParentClientHandler>>,
     pid: Option<u32>,
     age_secs: u64,
+    idb_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,8 +466,15 @@ impl WorkerPool {
 
     pub async fn release(&self, handle: PooledWorkerHandle) -> Result<(), ToolError> {
         let result = self.release_inner(&handle).await;
-        self.schedule_idle_reap(handle.slot.clone());
+        if self.slot_is_idle(&handle.slot).await {
+            self.schedule_idle_reap(handle.slot.clone());
+        }
         result
+    }
+
+    async fn slot_is_idle(&self, slot: &Arc<ChildSlot>) -> bool {
+        let child = slot.child.lock().await;
+        child.state == ChildState::Idle
     }
 
     async fn release_inner(&self, handle: &PooledWorkerHandle) -> Result<(), ToolError> {
@@ -489,7 +500,7 @@ impl WorkerPool {
 
         let close_error = match close {
             Ok(Ok(result)) if result.is_error != Some(true) => None,
-            Ok(Ok(result)) => remote::result_text(&result, "close_idb").err(),
+            Ok(Ok(result)) => remote::result_error(&result, "close_idb"),
             Ok(Err(err)) => Some(err),
             Err(_) => Some(ToolError::Timeout(CHILD_CLOSE_TIMEOUT_SECS)),
         };
@@ -532,9 +543,8 @@ impl WorkerPool {
                 worker_id = handle.worker_id,
                 session_id = %handle.session_id,
                 error = %err,
-                "child close_idb reported an error during release"
+                "child close_idb reported a non-retiring error during release; slot was reset idle"
             );
-            return Err(err);
         }
         Ok(())
     }
@@ -554,10 +564,21 @@ impl WorkerPool {
     }
 
     pub async fn mark_dead(&self, slot: &Arc<ChildSlot>) {
+        self.mark_dead_inner(slot, true).await;
+    }
+
+    async fn mark_dead_without_replacement(&self, slot: &Arc<ChildSlot>) {
+        self.mark_dead_inner(slot, false).await;
+    }
+
+    async fn mark_dead_inner(&self, slot: &Arc<ChildSlot>, replenish: bool) {
         let dead = self.take_dead_worker(slot).await;
         self.forget_slot(slot.id).await;
         if let Some(dead) = dead {
             Self::finish_dead_worker(slot.id, dead).await;
+        }
+        if replenish {
+            self.ensure_min_workers().await;
         }
     }
 
@@ -612,7 +633,7 @@ impl WorkerPool {
 
     fn take_dead_worker_locked(child: &mut PooledChild) -> DeadWorker {
         child.state = ChildState::Dead;
-        child.idb_path = None;
+        let idb_path = child.idb_path.take();
         let pid = child.pid;
         let age_secs = child.spawned_at.elapsed().as_secs();
         let service = child.service.take();
@@ -621,6 +642,7 @@ impl WorkerPool {
             service,
             pid,
             age_secs,
+            idb_path,
         }
     }
 
@@ -630,12 +652,42 @@ impl WorkerPool {
                 .close_with_timeout(Duration::from_secs(CHILD_CLOSE_TIMEOUT_SECS))
                 .await;
         }
+        if let Some(idb_path) = dead.idb_path.as_ref() {
+            remove_mcp_lock_for_pid(idb_path, dead.pid);
+        }
         warn!(
             worker_id,
             ?dead.pid,
             age_secs = dead.age_secs,
             "marked IDA child worker dead"
         );
+    }
+
+    async fn ensure_min_workers(&self) {
+        let min_workers = self.config.min_workers.min(self.config.max_workers);
+        if min_workers == 0 {
+            return;
+        }
+
+        loop {
+            let reservation = {
+                let mut inner = self.inner.lock().await;
+                let live_or_reserved = inner.spawning.len() + inner.children.len();
+                if live_or_reserved >= min_workers || live_or_reserved >= self.config.max_workers {
+                    return;
+                }
+                self.reserve_spawn_slot_locked(&mut inner)
+            };
+
+            let worker_id = reservation.worker_id();
+            if let Err(err) = self
+                .spawn_reserved_slot(reservation, ChildState::Idle)
+                .await
+            {
+                warn!(worker_id, error = %err, "failed to replenish minimum pooled worker");
+                return;
+            }
+        }
     }
 
     pub async fn shutdown_all(&self) {
@@ -646,7 +698,7 @@ impl WorkerPool {
         join_all(slots.into_iter().map(|slot| {
             let pool = self.clone();
             async move {
-                pool.mark_dead(&slot).await;
+                pool.mark_dead_without_replacement(&slot).await;
             }
         }))
         .await;
@@ -668,6 +720,11 @@ impl WorkerPool {
     fn worker_op_timeout(&self, requested: Option<u64>) -> Duration {
         let configured = self.config.worker_op_timeout;
         requested
+            .map(|seconds| {
+                seconds
+                    .min(MAX_TIMEOUT_SECS)
+                    .saturating_add(CHILD_TIMEOUT_GRACE_SECS)
+            })
             .map(Duration::from_secs)
             .map(|requested| requested.min(configured))
             .unwrap_or(configured)
@@ -820,7 +877,16 @@ impl PooledSessionState {
             .call_tool(tool, remote::json_object(args)?, timeout, cancel)
             .await
         {
-            Ok(result) => Ok(result),
+            Ok(result) => {
+                if let Some(err) = remote::result_error(&result, tool) {
+                    if child_tool_error_retires_worker(&err) {
+                        self.clear_handle_if_worker(handle.worker_id).await;
+                        self.pool.mark_dead(&handle.slot).await;
+                    }
+                    return Err(err);
+                }
+                Ok(result)
+            }
             Err(err) => {
                 self.clear_handle_if_worker(handle.worker_id).await;
                 Err(err)
@@ -872,24 +938,26 @@ impl PooledSessionState {
         file_type: Option<String>,
         auto_analyse: bool,
         extra_args: Vec<String>,
+        timeout_secs: Option<u64>,
         _progress_tx: Option<ProgressSender>,
         cancel: Option<CancellationToken>,
     ) -> Result<DbInfo, ToolError> {
         let (handle, fresh_lease) = self.lease_for_open().await?;
-        let timeout = self.pool.worker_op_timeout(None);
+        let timeout = self.pool.worker_op_timeout(timeout_secs);
         let result = handle
             .call_tool(
                 "open_idb",
-                remote::json_object(json!({
-                    "path": path,
-                    "load_debug_info": load_debug_info,
-                    "debug_info_path": debug_info_path,
-                    "debug_info_verbose": debug_info_verbose,
-                    "force": force,
-                    "file_type": file_type,
-                    "auto_analyse": auto_analyse,
-                    "extra_args": extra_args,
-                }))?,
+                remote::json_object(open_idb_child_args(
+                    path,
+                    load_debug_info,
+                    debug_info_path,
+                    debug_info_verbose,
+                    force,
+                    file_type,
+                    auto_analyse,
+                    extra_args,
+                    timeout_secs,
+                ))?,
                 timeout,
                 cancel,
             )
@@ -931,6 +999,7 @@ impl PooledSessionState {
             file_type,
             auto_analyse,
             extra_args,
+            None,
             None,
             None,
         )
@@ -1515,10 +1584,25 @@ impl PooledSessionState {
         &self,
         _progress_tx: Option<ProgressSender>,
         cancel: Option<CancellationToken>,
+        timeout_secs: Option<u64>,
     ) -> Result<Value, ToolError> {
         self.call_value(
             "analyze_funcs",
-            json!({ "background": false }),
+            analyze_funcs_child_args(timeout_secs, false),
+            timeout_secs,
+            cancel,
+        )
+        .await
+    }
+
+    pub async fn analyze_funcs_unbounded_observed(
+        &self,
+        _progress_tx: Option<ProgressSender>,
+        cancel: Option<CancellationToken>,
+    ) -> Result<Value, ToolError> {
+        self.call_value(
+            "analyze_funcs",
+            analyze_funcs_child_args(None, true),
             None,
             cancel,
         )
@@ -1534,7 +1618,7 @@ impl PooledSessionState {
         let value = self
             .call_value(
                 "find_bytes",
-                json!({ "patterns": pattern, "limit": max_results, "offset": 0, "timeout_secs": timeout_secs }),
+                find_bytes_child_args(pattern, max_results, timeout_secs),
                 timeout_secs,
                 None,
             )
@@ -1572,7 +1656,7 @@ impl PooledSessionState {
         let value = self
             .call_value(
                 "search",
-                json!({ "targets": target, "kind": kind, "limit": max_results, "offset": 0, "timeout_secs": timeout_secs }),
+                search_child_args(target, kind, max_results, timeout_secs),
                 timeout_secs,
                 None,
             )
@@ -1718,9 +1802,15 @@ impl PooledSessionState {
         code: &str,
         _progress_tx: Option<ProgressSender>,
         cancel: Option<CancellationToken>,
+        timeout_secs: Option<u64>,
     ) -> Result<Value, ToolError> {
-        self.call_value("run_script", json!({ "code": code }), None, cancel)
-            .await
+        self.call_value(
+            "run_script",
+            run_script_child_args(code, timeout_secs),
+            timeout_secs,
+            cancel,
+        )
+        .await
     }
 
     pub async fn pseudocode_at(
@@ -1759,6 +1849,69 @@ impl Drop for PooledSessionState {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn open_idb_child_args(
+    path: &str,
+    load_debug_info: bool,
+    debug_info_path: Option<String>,
+    debug_info_verbose: bool,
+    force: bool,
+    file_type: Option<String>,
+    auto_analyse: bool,
+    extra_args: Vec<String>,
+    timeout_secs: Option<u64>,
+) -> Value {
+    json!({
+        "path": path,
+        "load_debug_info": load_debug_info,
+        "debug_info_path": debug_info_path,
+        "debug_info_verbose": debug_info_verbose,
+        "force": force,
+        "file_type": file_type,
+        "auto_analyse": auto_analyse,
+        "_worker_extra_args": extra_args,
+        "timeout_secs": timeout_secs,
+    })
+}
+
+fn analyze_funcs_child_args(timeout_secs: Option<u64>, worker_no_timeout: bool) -> Value {
+    json!({
+        "background": false,
+        "timeout_secs": timeout_secs,
+        "_worker_no_timeout": worker_no_timeout,
+    })
+}
+
+fn run_script_child_args(code: &str, timeout_secs: Option<u64>) -> Value {
+    json!({ "code": code, "timeout_secs": timeout_secs })
+}
+
+fn find_bytes_child_args(pattern: String, max_results: usize, timeout_secs: Option<u64>) -> Value {
+    json!({
+        "patterns": [pattern],
+        "limit": max_results.min(10000),
+        "offset": 0,
+        "timeout_secs": timeout_secs,
+        "_worker_max_results": max_results,
+    })
+}
+
+fn search_child_args(
+    target: String,
+    kind: &str,
+    max_results: usize,
+    timeout_secs: Option<u64>,
+) -> Value {
+    json!({
+        "targets": [target],
+        "kind": kind,
+        "limit": max_results.min(10000),
+        "offset": 0,
+        "timeout_secs": timeout_secs,
+        "_worker_max_results": max_results,
+    })
+}
+
 fn extract_first_matches(value: Value, tool: &'static str) -> Result<Value, ToolError> {
     let results = value
         .get("results")
@@ -1775,15 +1928,18 @@ fn extract_first_matches(value: Value, tool: &'static str) -> Result<Value, Tool
         );
     }
 
-    let matches = results
-        .first()
-        .and_then(|first| first.get("matches"))
-        .cloned()
-        .ok_or_else(|| {
-            ToolError::RemoteProtocol(format!(
-                "{tool} response did not include results[0].matches"
-            ))
-        })?;
+    let Some(first) = results.first() else {
+        return Ok(json!({ "matches": [] }));
+    };
+    if let Some(error) = first.get("error").and_then(Value::as_str) {
+        return Err(ToolError::IdaError(error.to_string()));
+    }
+
+    let matches = first.get("matches").cloned().ok_or_else(|| {
+        ToolError::RemoteProtocol(format!(
+            "{tool} response did not include results[0].matches or results[0].error"
+        ))
+    })?;
     Ok(json!({ "matches": matches }))
 }
 
@@ -1799,6 +1955,13 @@ fn release_error_retires_worker(err: &ToolError) -> bool {
     )
 }
 
+fn child_tool_error_retires_worker(err: &ToolError) -> bool {
+    matches!(
+        err,
+        ToolError::WorkerClosed | ToolError::WorkerCrashed { .. } | ToolError::RemoteProtocol(_)
+    )
+}
+
 fn open_error_releases_lease(fresh_lease: bool, err: &ToolError) -> bool {
     fresh_lease
         || matches!(
@@ -1811,36 +1974,69 @@ fn open_error_releases_lease(fresh_lease: bool, err: &ToolError) -> bool {
         )
 }
 
+const STDERR_CHUNK_BYTES: usize = 4096;
+const STDERR_LINE_LIMIT_BYTES: usize = 16 * 1024;
+
 fn spawn_stderr_relay(
     worker_id: usize,
     stderr: Option<tokio::process::ChildStderr>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let Some(stderr) = stderr else {
+        let Some(mut stderr) = stderr else {
             return;
         };
-        let mut lines = BufReader::new(stderr).lines();
+        let mut chunk = [0_u8; STDERR_CHUNK_BYTES];
+        let mut pending = Vec::new();
+
         loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    debug!(target: "ida_mcp::worker_stderr", worker_id, %line);
-                }
-                Ok(None) => break,
+            match stderr.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => drain_stderr_chunk(worker_id, &mut pending, &chunk[..n]),
                 Err(err) => {
                     warn!(worker_id, error = %err, "failed to read child stderr");
                     break;
                 }
             }
         }
+
+        if !pending.is_empty() {
+            log_stderr_line(worker_id, &pending);
+        }
     })
+}
+
+fn drain_stderr_chunk(worker_id: usize, pending: &mut Vec<u8>, mut chunk: &[u8]) {
+    while let Some(pos) = chunk.iter().position(|byte| *byte == b'\n') {
+        pending.extend_from_slice(&chunk[..pos]);
+        log_stderr_line(worker_id, pending);
+        pending.clear();
+        chunk = &chunk[pos + 1..];
+    }
+
+    pending.extend_from_slice(chunk);
+    if pending.len() > STDERR_LINE_LIMIT_BYTES {
+        let truncated = &pending[..STDERR_LINE_LIMIT_BYTES];
+        let line = String::from_utf8_lossy(truncated);
+        debug!(target: "ida_mcp::worker_stderr", worker_id, line = %line, truncated = true);
+        pending.clear();
+    }
+}
+
+fn log_stderr_line(worker_id: usize, line: &[u8]) {
+    let line = String::from_utf8_lossy(line);
+    debug!(target: "ida_mcp::worker_stderr", worker_id, line = %line);
 }
 
 #[cfg(test)]
 mod tests {
     use crate::error::ToolError;
     use crate::ida::pool::{
-        open_error_releases_lease, release_error_retires_worker, WorkerPool, WorkerPoolConfig,
+        analyze_funcs_child_args, child_tool_error_retires_worker, extract_first_matches,
+        find_bytes_child_args, open_error_releases_lease, open_idb_child_args,
+        release_error_retires_worker, run_script_child_args, search_child_args, WorkerPool,
+        WorkerPoolConfig,
     };
+    use serde_json::json;
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -1856,10 +2052,92 @@ mod tests {
     }
 
     #[test]
+    fn explicit_child_timeout_gets_parent_watchdog_grace() {
+        let pool = WorkerPool::new(WorkerPoolConfig {
+            max_workers: 1,
+            min_workers: 0,
+            worker_idle_timeout: Duration::from_secs(300),
+            worker_op_timeout: Duration::from_secs(1800),
+            exe_path: PathBuf::from("/does/not/spawn/in/this/test"),
+            filter_args: Vec::new(),
+        });
+
+        assert_eq!(pool.worker_op_timeout(Some(120)), Duration::from_secs(130));
+        assert_eq!(pool.worker_op_timeout(Some(600)), Duration::from_secs(610));
+        assert_eq!(
+            pool.worker_op_timeout(Some(9999)),
+            Duration::from_secs(610),
+            "child foreground timeout is capped before adding parent grace"
+        );
+    }
+
+    #[test]
+    fn pooled_observed_child_args_forward_timeouts() {
+        let open_args = open_idb_child_args(
+            "/tmp/a",
+            true,
+            Some("/tmp/a.dSYM".to_string()),
+            true,
+            false,
+            Some("pe".to_string()),
+            true,
+            vec!["-A".to_string()],
+            Some(600),
+        );
+        assert_eq!(open_args["timeout_secs"], json!(600));
+
+        let analyze_args = analyze_funcs_child_args(Some(600), false);
+        assert_eq!(analyze_args["timeout_secs"], json!(600));
+        assert_eq!(analyze_args["_worker_no_timeout"], json!(false));
+
+        let background_analyze_args = analyze_funcs_child_args(None, true);
+        assert!(background_analyze_args["timeout_secs"].is_null());
+        assert_eq!(background_analyze_args["_worker_no_timeout"], json!(true));
+
+        let script_args = run_script_child_args("print(1)", Some(30));
+        assert_eq!(script_args["timeout_secs"], json!(30));
+    }
+
+    #[test]
+    fn pooled_search_child_args_preserve_single_terms_and_internal_limit() {
+        let search_args = search_child_args("Hello, world".to_string(), "text", 11000, Some(30));
+        assert_eq!(search_args["targets"], json!(["Hello, world"]));
+        assert_eq!(search_args["limit"], json!(10000));
+        assert_eq!(search_args["_worker_max_results"], json!(11000));
+
+        let bytes_args = find_bytes_child_args("aa,bb".to_string(), 15000, None);
+        assert_eq!(bytes_args["patterns"], json!(["aa,bb"]));
+        assert_eq!(bytes_args["limit"], json!(10000));
+        assert_eq!(bytes_args["_worker_max_results"], json!(15000));
+    }
+
+    #[test]
+    fn extract_first_matches_preserves_child_pattern_error() {
+        let err = extract_first_matches(
+            json!({ "results": [{ "pattern": "", "error": "empty pattern" }] }),
+            "find_bytes",
+        )
+        .expect_err("child pattern error must be surfaced");
+
+        assert!(matches!(err, ToolError::IdaError(message) if message == "empty pattern"));
+    }
+
+    #[test]
     fn release_retire_decision_keeps_ida_tool_errors_reusable() {
         assert!(!release_error_retires_worker(&ToolError::IdaError(
             "No database is currently open".to_string()
         )));
+    }
+
+    #[test]
+    fn child_tool_error_retire_decision_keeps_routine_timeouts_reusable() {
+        assert!(!child_tool_error_retires_worker(
+            &ToolError::TimeoutDetailed("run_script timed out after 5 seconds".to_string())
+        ));
+        assert!(!child_tool_error_retires_worker(&ToolError::Cancelled(
+            "run_script cancelled".to_string()
+        )));
+        assert!(child_tool_error_retires_worker(&ToolError::WorkerClosed));
     }
 
     #[test]

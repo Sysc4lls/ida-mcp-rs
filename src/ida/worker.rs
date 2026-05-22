@@ -243,6 +243,7 @@ impl IdaWorker {
             extra_args,
             None,
             None,
+            None,
         )
         .await
     }
@@ -259,6 +260,7 @@ impl IdaWorker {
         file_type: Option<String>,
         auto_analyse: bool,
         extra_args: Vec<String>,
+        _timeout_secs: Option<u64>,
         progress_tx: Option<ProgressSender>,
         cancel: Option<CancellationToken>,
     ) -> Result<DbInfo, ToolError> {
@@ -1284,6 +1286,7 @@ impl WorkerBackend {
         file_type: Option<String>,
         auto_analyse: bool,
         extra_args: Vec<String>,
+        timeout_secs: Option<u64>,
         progress_tx: Option<ProgressSender>,
         cancel: Option<CancellationToken>,
     ) -> Result<DbInfo, ToolError> {
@@ -1299,6 +1302,7 @@ impl WorkerBackend {
                         file_type,
                         auto_analyse,
                         extra_args,
+                        timeout_secs,
                         progress_tx,
                         cancel,
                     )
@@ -1315,6 +1319,7 @@ impl WorkerBackend {
                         file_type,
                         auto_analyse,
                         extra_args,
+                        timeout_secs,
                         progress_tx,
                         cancel,
                     )
@@ -1918,10 +1923,30 @@ impl WorkerBackend {
         &self,
         progress_tx: Option<ProgressSender>,
         cancel: Option<CancellationToken>,
+        timeout_secs: Option<u64>,
     ) -> Result<Value, ToolError> {
         match self {
             Self::Local(worker) => worker.analyze_funcs_observed(progress_tx, cancel).await,
-            Self::Pooled(state) => state.analyze_funcs_observed(progress_tx, cancel).await,
+            Self::Pooled(state) => {
+                state
+                    .analyze_funcs_observed(progress_tx, cancel, timeout_secs)
+                    .await
+            }
+        }
+    }
+
+    pub async fn analyze_funcs_unbounded_observed(
+        &self,
+        progress_tx: Option<ProgressSender>,
+        cancel: Option<CancellationToken>,
+    ) -> Result<Value, ToolError> {
+        match self {
+            Self::Local(worker) => worker.analyze_funcs_observed(progress_tx, cancel).await,
+            Self::Pooled(state) => {
+                state
+                    .analyze_funcs_unbounded_observed(progress_tx, cancel)
+                    .await
+            }
         }
     }
 
@@ -2083,10 +2108,15 @@ impl WorkerBackend {
         code: &str,
         progress_tx: Option<ProgressSender>,
         cancel: Option<CancellationToken>,
+        timeout_secs: Option<u64>,
     ) -> Result<Value, ToolError> {
         match self {
             Self::Local(worker) => worker.run_script_observed(code, progress_tx, cancel).await,
-            Self::Pooled(state) => state.run_script_observed(code, progress_tx, cancel).await,
+            Self::Pooled(state) => {
+                state
+                    .run_script_observed(code, progress_tx, cancel, timeout_secs)
+                    .await
+            }
         }
     }
 

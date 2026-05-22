@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
+use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -230,7 +231,16 @@ impl SessionDisconnectRegistry {
             return;
         };
 
-        tokio::spawn(async move {
+        let Ok(handle) = Handle::try_current() else {
+            tracing::warn!(
+                session_id = session_id.as_ref(),
+                "cannot spawn pooled HTTP disconnect cleanup outside a Tokio runtime"
+            );
+            self.session_closed(&session_id);
+            return;
+        };
+
+        handle.spawn(async move {
             if !self.disconnect_grace.is_zero() {
                 tokio::time::sleep(self.disconnect_grace).await;
             }
@@ -249,6 +259,7 @@ impl SessionDisconnectRegistry {
                         error = %err,
                         "failed to close pooled HTTP session after client stream disconnect"
                     );
+                    self.session_closed(&session_id);
                 }
             }
         });

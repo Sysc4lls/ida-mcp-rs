@@ -74,12 +74,29 @@ fn result_error_message(result: &CallToolResult, tool: &str) -> String {
         .unwrap_or_else(|| format!("child tool {tool} returned an error"))
 }
 
-fn result_error(result: &CallToolResult, tool: &str) -> Option<ToolError> {
+pub(crate) fn result_error(result: &CallToolResult, tool: &str) -> Option<ToolError> {
     if result.is_error != Some(true) {
         return None;
     }
 
-    Some(ToolError::IdaError(result_error_message(result, tool)))
+    Some(classify_child_error(result_error_message(result, tool)))
+}
+
+fn classify_child_error(message: String) -> ToolError {
+    let lowered = message.to_ascii_lowercase();
+    if lowered.contains("worker channel closed") {
+        return ToolError::WorkerClosed;
+    }
+    if lowered.contains("timed out after")
+        || lowered.contains("operation timed out")
+        || lowered.contains("exceeded worker operation timeout")
+    {
+        return ToolError::TimeoutDetailed(message);
+    }
+    if lowered.contains("cancelled") || lowered.contains("canceled") {
+        return ToolError::Cancelled(message);
+    }
+    ToolError::IdaError(message)
 }
 
 pub(crate) fn parse_json<T: DeserializeOwned>(
@@ -147,6 +164,38 @@ mod tests {
         let err = parse_value(result, "open_idb").expect_err("structured error must fail");
 
         assert!(matches!(err, ToolError::IdaError(message) if message.contains("bad idb")));
+    }
+
+    #[test]
+    fn parse_value_preserves_child_worker_closed_errors() {
+        let result = CallToolResult::error(vec![Content::text("Worker channel closed")]);
+
+        let err = parse_value(result, "close_idb").expect_err("worker closed must fail");
+
+        assert!(matches!(err, ToolError::WorkerClosed));
+    }
+
+    #[test]
+    fn parse_value_preserves_child_timeout_errors() {
+        let result =
+            CallToolResult::error(vec![Content::text("open_idb timed out after 600 seconds")]);
+
+        let err = parse_value(result, "open_idb").expect_err("timeout must fail");
+
+        assert!(
+            matches!(err, ToolError::TimeoutDetailed(message) if message.contains("600 seconds"))
+        );
+    }
+
+    #[test]
+    fn parse_value_preserves_child_cancellation_errors() {
+        let result = CallToolResult::error(vec![Content::text(
+            "run_script was cancelled by the client",
+        )]);
+
+        let err = parse_value(result, "run_script").expect_err("cancellation must fail");
+
+        assert!(matches!(err, ToolError::Cancelled(message) if message.contains("cancelled")));
     }
 
     #[test]

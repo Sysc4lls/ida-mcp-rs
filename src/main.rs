@@ -288,6 +288,13 @@ fn init_stdio_ida_state() -> anyhow::Result<ida::IdaInitState> {
     }
 }
 
+fn pooled_child_filter_args(_parent_filter_args: &[OsString]) -> Vec<OsString> {
+    // Public tool filtering is enforced by the parent HTTP server. Child workers
+    // are private implementation details and must keep lifecycle/internal tools
+    // such as close_idb and analyze_funcs available for the parent.
+    Vec::new()
+}
+
 fn cancel_background_tasks(registry: &TaskRegistry, message: &str) {
     let cancelled = registry.cancel_all_running(message);
     if cancelled > 0 {
@@ -634,7 +641,7 @@ fn run_server_http_pooled(
                 worker_idle_timeout: Duration::from_secs(args.worker_idle_timeout_secs),
                 worker_op_timeout: Duration::from_secs(args.worker_op_timeout_secs),
                 exe_path,
-                filter_args: child_filter_args,
+                filter_args: pooled_child_filter_args(&child_filter_args),
             });
             pool.warm_min()
                 .await
@@ -980,8 +987,9 @@ fn disasm_at(db: &IDB, addr: Address, count: usize) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Cli, DEFAULT_HTTP_SESSION_KEEP_ALIVE_SECS};
+    use crate::{pooled_child_filter_args, Cli, DEFAULT_HTTP_SESSION_KEEP_ALIVE_SECS};
     use clap::Parser;
+    use std::ffi::OsString;
 
     #[test]
     fn http_session_keep_alive_default_is_thirty_minutes() {
@@ -994,5 +1002,19 @@ mod tests {
             DEFAULT_HTTP_SESSION_KEEP_ALIVE_SECS
         );
         assert_eq!(DEFAULT_HTTP_SESSION_KEEP_ALIVE_SECS, 1800);
+    }
+
+    #[test]
+    fn pooled_child_workers_ignore_public_tool_filters() {
+        let parent_args = vec![
+            OsString::from("--read-only"),
+            OsString::from("--tools"),
+            OsString::from("open_idb,list_functions"),
+        ];
+
+        assert!(
+            pooled_child_filter_args(&parent_args).is_empty(),
+            "pooled child workers must keep private lifecycle tools available"
+        );
     }
 }

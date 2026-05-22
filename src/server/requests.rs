@@ -36,6 +36,9 @@ pub struct OpenIdbRequest {
     #[schemars(description = "Open timeout in seconds (default 300, max 600).")]
     #[schemars(range(min = 0, max = 600))]
     pub timeout_secs: Option<i64>,
+    #[serde(default, rename = "_worker_extra_args")]
+    #[schemars(skip)]
+    pub worker_extra_args: Vec<String>,
 }
 
 impl OpenIdbRequest {
@@ -86,6 +89,7 @@ mod tests {
             file_type: file_type.map(str::to_string),
             auto_analyse: None,
             timeout_secs: None,
+            worker_extra_args: Vec::new(),
         }
     }
 
@@ -161,6 +165,9 @@ pub struct AnalyzeFuncsRequest {
     )]
     #[schemars(range(min = 0, max = 600))]
     pub timeout_secs: Option<i64>,
+    #[serde(default, rename = "_worker_no_timeout")]
+    #[schemars(skip)]
+    pub worker_no_timeout: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -608,6 +615,9 @@ pub struct FindBytesRequest {
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
     #[schemars(range(min = 0, max = 600))]
     pub timeout_secs: Option<i64>,
+    #[serde(default, rename = "_worker_max_results")]
+    #[schemars(skip)]
+    pub worker_max_results: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -628,6 +638,9 @@ pub struct SearchRequest {
     #[schemars(description = "Timeout in seconds for this operation (default: 120, max: 600)")]
     #[schemars(range(min = 0, max = 600))]
     pub timeout_secs: Option<i64>,
+    #[serde(default, rename = "_worker_max_results")]
+    #[schemars(skip)]
+    pub worker_max_results: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

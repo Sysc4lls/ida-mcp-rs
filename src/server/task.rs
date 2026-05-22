@@ -114,6 +114,18 @@ impl TaskEntry {
         refresh_updated(&mut self.state);
         true
     }
+
+    fn finish_cancelled(&mut self, message: &str) -> bool {
+        if self.state.status != TaskStatus::Running {
+            return false;
+        }
+
+        self.clear_runtime();
+        self.state.status = TaskStatus::Cancelled;
+        self.state.message = message.to_string();
+        refresh_updated(&mut self.state);
+        true
+    }
 }
 
 /// Thread-safe registry of background tasks.
@@ -262,9 +274,25 @@ impl TaskRegistry {
     /// Cancel a running task. Returns `true` if the task was running
     /// and has been aborted.
     pub fn cancel(&self, id: &str) -> bool {
+        self.cancel_with_message(id, "Cancelled by client")
+    }
+
+    pub fn cancel_with_message(&self, id: &str, message: &str) -> bool {
         let mut entries = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let cancelled = match entries.get_mut(id) {
-            Some(entry) => entry.mark_cancelled("Cancelled by client"),
+            Some(entry) => entry.mark_cancelled(message),
+            None => false,
+        };
+        if cancelled {
+            prune_terminal_tasks(&mut entries);
+        }
+        cancelled
+    }
+
+    pub fn finish_cancelled(&self, id: &str, message: &str) -> bool {
+        let mut entries = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let cancelled = match entries.get_mut(id) {
+            Some(entry) => entry.finish_cancelled(message),
             None => false,
         };
         if cancelled {

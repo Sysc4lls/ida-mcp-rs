@@ -75,6 +75,20 @@ fn idb_path_for_raw_binary(path: &Path) -> PathBuf {
     PathBuf::from(raw_idb)
 }
 
+fn has_ida_database_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            let ext = ext.to_ascii_lowercase();
+            ext == "i64" || ext == "idb" || ext == "id0"
+        })
+        .unwrap_or(false)
+}
+
+fn raw_input_matches_generated_database(raw: &Path, database: &Path) -> bool {
+    !has_ida_database_extension(raw) && idb_path_for_raw_binary(raw) == database
+}
+
 fn base_input_path_for_database(path: &Path) -> PathBuf {
     let mut base = path.to_path_buf();
     if let Some(ext) = base.extension().and_then(|e| e.to_str()) {
@@ -92,6 +106,8 @@ fn database_paths_match(current: &Path, requested: &Path) -> bool {
     current == requested
         || unpacked_id0_path(current).as_deref() == Some(requested)
         || unpacked_id0_path(requested).as_deref() == Some(current)
+        || raw_input_matches_generated_database(requested, current)
+        || raw_input_matches_generated_database(current, requested)
 }
 
 fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
@@ -173,20 +189,26 @@ pub fn handle_open(
         raw_out_path = Some(out_path);
     }
 
-    // If force is enabled, try to clean up stale lock files from crashed sessions
+    let lock_target_path = raw_out_path.as_ref().unwrap_or(&expanded);
+
+    // If force is enabled, try to clean up stale lock files from crashed sessions.
+    // Raw binaries lock the generated .i64 path so all sessions agree on the
+    // effective database/output file even when the input has its own extension.
     if force {
-        if let Some(stale) = clean_stale_mcp_lock(&expanded) {
-            info!(
-                path = %stale.path.display(),
-                pid = stale.pid,
-                reason = %stale.reason,
-                "Cleaned up stale lock file"
-            );
+        for candidate in [lock_target_path, &expanded] {
+            if let Some(stale) = clean_stale_mcp_lock(candidate) {
+                info!(
+                    path = %stale.path.display(),
+                    pid = stale.pid,
+                    reason = %stale.reason,
+                    "Cleaned up stale lock file"
+                );
+            }
         }
     }
 
     // Acquire MCP lock file (to detect other ida-mcp instances)
-    let mcp_lock = acquire_mcp_lock(&expanded)?;
+    let mcp_lock = acquire_mcp_lock(lock_target_path)?;
 
     // Open database
     let path_display = expanded.display().to_string();
@@ -277,7 +299,9 @@ pub fn handle_open(
         Ok(db) => db,
         Err(e) => {
             release_mcp_lock_file(mcp_lock);
-            if let Some(lock_msg) = detect_db_lock(&expanded, &e) {
+            if let Some(lock_msg) =
+                detect_db_lock(&opened_path, &e).or_else(|| detect_db_lock(&expanded, &e))
+            {
                 return Err(ToolError::DatabaseLocked(lock_msg));
             }
             return Err(ToolError::OpenFailed(format!(
@@ -430,8 +454,8 @@ mod tests {
     use std::path::Path;
 
     use crate::ida::handlers::database::{
-        base_input_path_for_database, database_paths_match, idb_path_for_raw_binary,
-        init_database_args, non_empty_trimmed,
+        base_input_path_for_database, database_paths_match, has_ida_database_extension,
+        idb_path_for_raw_binary, init_database_args, non_empty_trimmed,
     };
 
     #[test]
@@ -462,6 +486,24 @@ mod tests {
         assert!(database_paths_match(unpacked, legacy));
         assert!(database_paths_match(packed_upper, unpacked));
         assert!(!database_paths_match(packed, legacy));
+    }
+
+    #[test]
+    fn database_paths_match_treats_raw_input_and_generated_i64_as_same_database() {
+        let raw = Path::new("/tmp/testA.exe");
+        let generated = Path::new("/tmp/testA.exe.i64");
+        let replaced_extension = Path::new("/tmp/testA.i64");
+
+        assert!(database_paths_match(generated, raw));
+        assert!(database_paths_match(raw, generated));
+        assert!(!database_paths_match(raw, replaced_extension));
+    }
+
+    #[test]
+    fn has_ida_database_extension_only_matches_real_database_extensions() {
+        assert!(has_ida_database_extension(Path::new("/tmp/a.i64")));
+        assert!(has_ida_database_extension(Path::new("/tmp/a.IDB")));
+        assert!(!has_ida_database_extension(Path::new("/tmp/a.exe")));
     }
 
     #[test]
