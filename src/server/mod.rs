@@ -2983,7 +2983,11 @@ impl IdaMcpServer {
         }
     }
 
-    #[tool(description = "Declare a type in the local type library")]
+    #[tool(
+        description = "Declare a type (struct/union/enum/typedef) in the local type library from a \
+                       C-syntax declaration. Set multi=true to parse several declarations in one \
+                       string. On failure the parser diagnostics are returned in the `errors` field."
+    )]
     async fn declare_type(
         &self,
         Parameters(req): Parameters<DeclareTypeRequest>,

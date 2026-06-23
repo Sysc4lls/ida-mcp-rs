@@ -1001,7 +1001,7 @@ dependencies = [
 [[package]]
 name = "idalib"
 version = "0.7.4+9.3.260213"
-source = "git+https://github.com/blacktop/idalib.git?branch=sdk-9.3.1#a286cd21857c45837766dac3ff2a3664216c3047"
+source = "git+https://github.com/Sysc4lls/idalib.git?branch=sdk-9.3.1-error-capture#f105fdf4b6538c0943790cdfbd7d3bf168718b13"
 dependencies = [
  "anyhow",
  "autocxx",
@@ -1015,7 +1015,7 @@ dependencies = [
 [[package]]
 name = "idalib-build"
 version = "0.7.4+9.3.260213"
-source = "git+https://github.com/blacktop/idalib.git?branch=sdk-9.3.1#a286cd21857c45837766dac3ff2a3664216c3047"
+source = "git+https://github.com/Sysc4lls/idalib.git?branch=sdk-9.3.1-error-capture#f105fdf4b6538c0943790cdfbd7d3bf168718b13"
 dependencies = [
  "anyhow",
  "idalib-sys",
@@ -1024,7 +1024,7 @@ dependencies = [
 [[package]]
 name = "idalib-sys"
 version = "0.7.4+9.3.260213"
-source = "git+https://github.com/blacktop/idalib.git?branch=sdk-9.3.1#a286cd21857c45837766dac3ff2a3664216c3047"
+source = "git+https://github.com/Sysc4lls/idalib.git?branch=sdk-9.3.1-error-capture#f105fdf4b6538c0943790cdfbd7d3bf168718b13"
 dependencies = [
  "anyhow",
  "autocxx",

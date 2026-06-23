@@ -127,20 +127,26 @@ pub fn handle_declare_type(
     let db = idb.as_ref().ok_or(ToolError::NoDatabaseOpen)?;
 
     if multi {
-        let errors = db.declare_types(decl, relaxed);
-        return Ok(serde_json::to_value(DeclareTypesResult { errors })
-            .unwrap_or_else(|_| serde_json::json!({ "errors": errors })));
+        let result = db.declare_types(decl, relaxed);
+        let count = result.count;
+        return Ok(serde_json::to_value(DeclareTypesResult {
+            count: result.count,
+            errors: result.errors,
+        })
+        .unwrap_or_else(|_| serde_json::json!({ "count": count })));
     }
 
     let result = db.declare_type(decl, relaxed, replace);
+    let code = result.code;
     Ok(serde_json::to_value(DeclareTypeResult {
         code: result.code,
         name: result.name,
         decl: result.decl,
         kind: result.kind,
         replaced: replace,
+        errors: result.errors,
     })
-    .unwrap_or_else(|_| serde_json::json!({ "code": result.code })))
+    .unwrap_or_else(|_| serde_json::json!({ "code": code })))
 }
 
 #[allow(clippy::too_many_arguments)]

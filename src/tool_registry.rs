@@ -776,8 +776,10 @@ pub static TOOL_REGISTRY: &[ToolInfo] = &[
         name: "declare_type",
         category: ToolCategory::Types,
         short_desc: "Declare a type in the local type library",
-        full_desc: "Parse a C declaration and store it in the local type library (optionally replacing existing).",
-        example: r#"{"decl": "typedef int mcp_int_t;", "replace": true}"#,
+        full_desc: "Parse a C declaration (struct/union/enum/typedef) and store it in the local type \
+                    library (optionally replacing existing). Use multi=true for several declarations \
+                    in one string. On failure, parser diagnostics are returned in the `errors` field.",
+        example: r#"{"decl": "struct Foo { int a; char *b; };", "replace": true}"#,
         default: false,
         keywords: &["type", "declare", "typedef"],
     },

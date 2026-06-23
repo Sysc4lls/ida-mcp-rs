@@ -258,12 +258,19 @@ pub struct DeclareTypeResult {
     pub decl: String,
     pub kind: String,
     pub replaced: bool,
+    /// Human-readable parser/storage diagnostics. Empty/omitted on success.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub errors: String,
 }
 
 /// Declare multiple types result
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DeclareTypesResult {
-    pub errors: i32,
+    /// Number of errors reported by the parser (0 means success).
+    pub count: i32,
+    /// Human-readable parser diagnostics. Empty/omitted on success.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub errors: String,
 }
 
 /// Applied type result

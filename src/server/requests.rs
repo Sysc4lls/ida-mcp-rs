@@ -325,7 +325,10 @@ pub struct LocalTypesRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeclareTypeRequest {
-    #[schemars(description = "C declaration(s) to add to the local type library")]
+    #[schemars(
+        description = "C declaration(s) to add to the local type library, e.g. \
+                       'struct Foo { int a; char *b; };'"
+    )]
     pub decl: String,
     #[schemars(description = "Relaxed parsing (allow unknown namespaces)")]
     pub relaxed: Option<bool>,
