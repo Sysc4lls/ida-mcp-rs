@@ -592,7 +592,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1001,7 +1001,7 @@ dependencies = [
 [[package]]
 name = "idalib"
 version = "0.7.4+9.3.260213"
-source = "git+https://github.com/Sysc4lls/idalib.git?branch=sdk-9.3.1-error-capture#f105fdf4b6538c0943790cdfbd7d3bf168718b13"
+source = "git+https://github.com/Sysc4lls/idalib.git?branch=sdk-9.3.1#f105fdf4b6538c0943790cdfbd7d3bf168718b13"
 dependencies = [
  "anyhow",
  "autocxx",
@@ -1015,7 +1015,7 @@ dependencies = [
 [[package]]
 name = "idalib-build"
 version = "0.7.4+9.3.260213"
-source = "git+https://github.com/Sysc4lls/idalib.git?branch=sdk-9.3.1-error-capture#f105fdf4b6538c0943790cdfbd7d3bf168718b13"
+source = "git+https://github.com/Sysc4lls/idalib.git?branch=sdk-9.3.1#f105fdf4b6538c0943790cdfbd7d3bf168718b13"
 dependencies = [
  "anyhow",
  "idalib-sys",
@@ -1024,7 +1024,7 @@ dependencies = [
 [[package]]
 name = "idalib-sys"
 version = "0.7.4+9.3.260213"
-source = "git+https://github.com/Sysc4lls/idalib.git?branch=sdk-9.3.1-error-capture#f105fdf4b6538c0943790cdfbd7d3bf168718b13"
+source = "git+https://github.com/Sysc4lls/idalib.git?branch=sdk-9.3.1#f105fdf4b6538c0943790cdfbd7d3bf168718b13"
 dependencies = [
  "anyhow",
  "autocxx",
@@ -1312,7 +1312,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1572,7 +1572,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1794,7 +1794,7 @@ dependencies = [
  "getrandom",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2200,7 +2200,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
