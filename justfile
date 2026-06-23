@@ -200,6 +200,10 @@ test-crash-guard: build
 test-callees-indirect: build
     cd test && SERVER_BIN=../target/debug/ida-mcp RUST_LOG=ida_mcp=trace just test-callees-indirect
 
+# Run declare_type parser-diagnostic capture test (skips if IDA license invalid)
+test-declare-type: build
+    cd test && SERVER_BIN=../target/debug/ida-mcp RUST_LOG=ida_mcp=trace just test-declare-type
+
 # Measure the tools/list payload size (per-tool char ranking + descriptions/schemas split)
 measure-tools: build
     cd test && SERVER_BIN=../target/debug/ida-mcp just measure-tools

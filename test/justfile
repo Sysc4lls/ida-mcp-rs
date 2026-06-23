@@ -436,6 +436,28 @@ test-callees-indirect:
         bash ./stdio_callees_indirect.sh
     echo "✅ callees-indirect test passed"
 
+# Run declare_type parser-diagnostic capture test (skips if IDA license invalid)
+test-declare-type:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -x "{{ server_bin }}" ]; then
+        echo "Server binary not found: {{ server_bin }}"
+        echo "Run 'cargo build --release' first"
+        exit 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "jq is required for declare-type test (brew install jq)"
+        exit 1
+    fi
+    if ! command -v {{ cc }} >/dev/null 2>&1; then
+        echo "{{ cc }} is required to build the fixture"
+        exit 1
+    fi
+    echo "🧪 Running declare_type diagnostics test..."
+    RUST_LOG="{{ rust_log }}" MCP_STDIO_BIN="{{ server_bin }}" CC="{{ cc }}" \
+        bash ./stdio_declare_type.sh
+    echo "✅ declare-type test passed"
+
 # Verify server-side tool filtering at the protocol level (Phase 2a)
 test-tool-filter:
     #!/usr/bin/env bash
